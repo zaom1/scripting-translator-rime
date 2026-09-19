@@ -1,0 +1,3557 @@
+import {
+  Button,
+  ColorPicker,
+  Editor,
+  ForEach,
+  Group,
+  HStack,
+  Image,
+  List,
+  Navigation,
+  NavigationLink,
+  NavigationStack,
+  Path,
+  Picker,
+  Script,
+  Section,
+  Slider,
+  Spacer,
+  Text,
+  TextField,
+  Toggle,
+  useEffect,
+  useMemo,
+  useObservable,
+  useRef,
+  useState,
+  VStack,
+} from "scripting";
+import {
+  type ActionSendMode,
+  CANDIDATE_BAR_HEIGHT_MAX,
+  CANDIDATE_BAR_HEIGHT_MIN,
+  type CandidateMenuAction,
+  type CandidateRightButtonMode,
+  COMPOSING_FUNCTION_KEYS,
+  DEFAULT_CANDIDATE_MENU_ACTIONS,
+  DEFAULT_KEY_COLORS,
+  DEFAULT_KEY_FONT_COLORS,
+  DEFAULT_KEY_HINT_COLORS,
+  DEFAULT_LETTER_SWIPE_DOWN,
+  DEFAULT_LETTER_SWIPE_DOWN_SYMBOLS,
+  DEFAULT_RIME_KEYBOARD_SETTINGS,
+  DEFAULT_T9_PUNCTUATION_ITEMS,
+  FUNCTION_KEYS,
+  FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN,
+  FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN_SYMBOLS,
+  HAPTIC_LEVEL_MAX,
+  HAPTIC_LEVEL_MIN,
+  KEY_VISUAL_INSET_MAX,
+  KEY_VISUAL_INSET_MIN,
+  KEYBOARD_HEIGHT_MAX,
+  KEYBOARD_HEIGHT_MIN,
+  type KeyboardType,
+  type KeyColorPair,
+  type KeyColorScheme,
+  type KeyColorSettings,
+  LETTER_KEYS,
+  LETTER_LONG_PRESS_DURATION_MAX,
+  LETTER_LONG_PRESS_DURATION_MIN,
+  loadRimeKeyboardSettings,
+  normalizeRimeKeyboardSettings,
+  type RimeKeyboardSettings,
+  type RimeKeyboardTheme,
+  saveRimeKeyboardSettings,
+  SWIPE_TRIGGER_DISTANCE_MAX,
+  SWIPE_TRIGGER_DISTANCE_MIN,
+  T9_KEY_IDS,
+  type T9PunctuationItem,
+  TOOLBAR_LEFT_BUTTON_MAX,
+  type ToolbarButtonConfig,
+} from "./settings";
+import {
+  ensureT9ProcessorLuaInstalled,
+  scriptingRimeDataRoots,
+  T9_PROCESSOR_SCHEMA_ENTRY,
+} from "./t9ProcessorInstall";
+import { useMarkdownReleaseNotesSheet } from "./ReleaseNotesSheet";
+import {
+  clearPerformanceDiagnostics,
+  performanceDiagnosticsReport,
+} from "./performanceDiagnostics";
+
+const THEME_OPTIONS: Array<{ value: RimeKeyboardTheme; label: string }> = [
+  { value: "system", label: "跟随系统" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+];
+
+const CANDIDATE_RIGHT_BUTTON_OPTIONS: Array<
+  { value: CandidateRightButtonMode; label: string }
+> = [
+  { value: "dismiss", label: "收起键盘" },
+  { value: "expand", label: "展开候选" },
+  { value: "hidden", label: "不显示" },
+];
+
+const ACTION_MODE_OPTIONS: Array<{ value: ActionSendMode; label: string }> = [
+  { value: "auto", label: "自动" },
+  { value: "rime", label: "发送给 Rime" },
+  { value: "direct", label: "直接上屏" },
+];
+
+const FUNCTION_KEY_LABELS: Record<string, string> = {
+  left: "左移",
+  head: "行首",
+  select: "全选",
+  cut: "剪切",
+  copy: "复制",
+  paste: "粘贴",
+  tail: "行尾",
+  right: "右移",
+  page: "翻页",
+  tone1: "一声",
+  tone2: "二声",
+  tone3: "三声",
+  tone4: "四声",
+  filter: "包裹",
+};
+
+function moveItems<T>(items: T[], indices: number[], newOffset: number) {
+  const result = items.slice();
+  const moving = indices
+    .slice()
+    .sort((a, b) => b - a)
+    .map((index) => result.splice(index, 1)[0])
+    .reverse()
+    .filter((item): item is T => item != null);
+  const removedBeforeOffset = indices.filter((index) => index < newOffset)
+    .length;
+  const insertAt = Math.max(
+    0,
+    Math.min(result.length, newOffset - removedBeforeOffset),
+  );
+  result.splice(insertAt, 0, ...moving);
+  return result;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const COMMAND_REFERENCE_GROUPS: Array<{
+  title: string;
+  items: Array<{ command: string; description: string }>;
+}> = [
+  {
+    title: "编辑与光标",
+    items: [
+      { command: "{left}", description: "光标左移一位" },
+      { command: "{right}", description: "光标右移一位" },
+      { command: "{home}", description: "移动到行首" },
+      { command: "{end}", description: "移动到行尾" },
+      { command: "{selectAll}", description: "执行全选" },
+      {
+        command: "{toggleSelectAll}",
+        description: "全选/取消全选切换",
+      },
+      { command: "{cut}", description: "剪切选中内容" },
+      { command: "{copy}", description: "复制选中内容" },
+      { command: "{paste}", description: "粘贴剪贴板文本" },
+    ],
+  },
+  {
+    title: "Rime 候选与预编辑",
+    items: [
+      { command: "{rimeUp}", description: "发送 Rime 上方向键" },
+      { command: "{rimeDown}", description: "发送 Rime 下方向键" },
+      { command: "{rimePageUp}", description: "发送 Rime 上翻页" },
+      { command: "{rimePageDown}", description: "发送 Rime 下翻页" },
+      { command: "{commitComposition}", description: "提交当前预编辑" },
+    ],
+  },
+  {
+    title: "文本处理",
+    items: [
+      { command: "{deleteAll}", description: "删除当前可删除文本" },
+      { command: "{restoreDeleted}", description: "恢复最近删除内容" },
+      { command: "{clearComposition}", description: "清空/删除当前预编辑拼音" },
+    ],
+  },
+  {
+    title: "工具栏动作",
+    items: [
+      { command: "{keyboardHome}", description: "返回 Scripting 键盘主界面" },
+      { command: "{keyboardSettings}", description: "运行当前设置脚本" },
+      { command: "{schemaMenu}", description: "打开 Rime 方案选单" },
+      { command: "{newline}", description: "一键换行（上屏 \\n）" },
+      {
+        command: "{modelMenu}",
+        description: "打开带搜索的 AI 模型切换浮层",
+      },
+      {
+        command: "{translateLangMenu}",
+        description: "打开「翻译目标语言」选择浮层（供 {translate} 使用；默认自动=中英互译）",
+      },
+      { command: "{dismissKeyboard}", description: "收起键盘" },
+      {
+        command: "{toggleSymbol}",
+        description: "切换数字/符号键盘层（等同于“123”键）",
+      },
+      {
+        command: "{chinesePunct}",
+        description: "切换为中文标点（Rime ascii_punct 关闭）",
+      },
+      {
+        command: "{englishPunct}",
+        description: "切换为英文标点（Rime ascii_punct 开启）",
+      },
+      {
+        command: "{togglePunct}",
+        description: "一键在中/英标点之间来回切换（键面动态显示 ，/ ,）",
+      },
+      {
+        command: "{punctPanel}",
+        description: "打开中英标点符号面板（点哪个符号就输入哪个）",
+      },
+      { command: "keyboard:CAIS", description: "切换到指定键盘脚本" },
+      { command: "https://example.com", description: "用 Safari 打开网页" },
+      { command: "url:https://example.com", description: "用 Safari 打开网页" },
+      { command: "script:脚本名", description: "运行指定 Scripting 脚本" },
+      {
+        command: 'js:await fetch("https://example.com")',
+        description: "执行简单 JS 脚本",
+      },
+      {
+        command:
+          'js:const r = await fetch("https://example.com"); ctx.insertText(await r.text())',
+        description: "在 JS 脚本中手动将结果上屏",
+      },
+      {
+        command: "{clipboard}",
+        description: "在 js: 脚本中替换为当前剪切板文本",
+      },
+      {
+        command: "{translate}",
+        description: "原地翻译：取选中/光标前文本→用当前激活模型翻译（目标语言由 {translateLangMenu} 选定，默认中英互译）→就地替换；长文本自动分块（需先在模型标签选一个可用 AI 接口）",
+      },
+      {
+        command: "{aiReply}",
+        description: "AI 自动回复：取光标前一句/选中文本/剪贴板→用当前激活模型生成回复→直接上屏",
+      },
+    ],
+  },
+  {
+    title: "Rime 按键名示例",
+    items: [
+      { command: "Break", description: "发送 Rime 支持的 Break 键" },
+      { command: "Page_Up", description: "发送 Rime Page Up 键" },
+      { command: "Page_Down", description: "发送 Rime Page Down 键" },
+      { command: "Up", description: "发送 Rime 上方向键" },
+      { command: "Down", description: "发送 Rime 下方向键" },
+      { command: "Left", description: "发送 Rime 左方向键" },
+      { command: "Right", description: "发送 Rime 右方向键" },
+      { command: "Home", description: "发送 Rime Home 键" },
+      { command: "End", description: "发送 Rime End 键" },
+      { command: "BackSpace", description: "发送 Rime BackSpace 键" },
+      { command: "Delete", description: "发送 Rime Delete 键" },
+      { command: "Escape", description: "发送 Rime Escape 键" },
+      { command: "Tab", description: "发送 Rime Tab 键" },
+      { command: "Return", description: "发送 Rime Return 键" },
+      { command: "space", description: "发送 Rime 空格键" },
+      { command: "backslash", description: "发送 Rime 反斜杠键" },
+      { command: "slash", description: "发送 Rime 斜杠键" },
+      { command: "grave", description: "发送 Rime 反引号键" },
+      { command: "asciitilde", description: "发送 Rime 波浪号键" },
+      { command: "bracketleft", description: "发送 Rime 左方括号键" },
+      { command: "bracketright", description: "发送 Rime 右方括号键" },
+      { command: "comma", description: "发送 Rime 逗号键" },
+      { command: "period", description: "发送 Rime 句号键" },
+      { command: "minus", description: "发送 Rime 减号键" },
+      { command: "equal", description: "发送 Rime 等号键" },
+      { command: "semicolon", description: "发送 Rime 分号键" },
+      { command: "apostrophe", description: "发送 Rime 单引号键" },
+    ],
+  },
+  {
+    title: "组合按键示例",
+    items: [
+      { command: "Control+j", description: "发送 Control + j" },
+      { command: "Control+k", description: "发送 Control + k" },
+      { command: "Control+l", description: "发送 Control + l" },
+      { command: "Control+p", description: "发送 Control + p" },
+      { command: "Control+Delete", description: "发送 Control + Delete" },
+      { command: "Control+grave", description: "发送 Control + `" },
+      { command: "Shift+Tab", description: "发送 Shift + Tab" },
+      { command: "Alt+Left", description: "发送 Alt + Left" },
+    ],
+  },
+];
+
+const KEY_COLOR_GROUPS: Array<{
+  title: string;
+  keys: Array<{ id: string; label: string }>;
+}> = [
+  {
+    title: "字母键",
+    keys: LETTER_KEYS.map((key) => ({ id: key, label: key.toUpperCase() })),
+  },
+  {
+    title: "控制键",
+    keys: [
+      { id: "shift", label: "Shift" },
+      { id: "backspace", label: "Delete" },
+      { id: "numbers", label: "数字切换" },
+      { id: "comma", label: "逗号" },
+      { id: "space", label: "空格" },
+      { id: "mode", label: "中英切换" },
+      { id: "enter", label: "回车" },
+    ],
+  },
+  {
+    title: "九键键盘",
+    keys: [
+      ...T9_KEY_IDS.map((key) => ({
+        id: `t9-${key}`,
+        label: `九键 ${key}`,
+      })),
+      { id: "t9-left-column", label: "左侧符号列" },
+      { id: "t9-backspace", label: "九键 Delete" },
+      { id: "t9-delimiter", label: "九键分词" },
+      { id: "t9-enter", label: "九键回车" },
+    ],
+  },
+  {
+    title: "功能行",
+    keys: [
+      { id: "idle-left", label: "左移" },
+      { id: "idle-head", label: "行首" },
+      { id: "idle-schema", label: "全选" },
+      { id: "idle-cut", label: "剪切" },
+      { id: "idle-copy", label: "复制" },
+      { id: "idle-paste", label: "粘贴" },
+      { id: "idle-tail", label: "行尾" },
+      { id: "idle-right", label: "右移" },
+    ],
+  },
+  {
+    title: "预编辑功能行",
+    keys: [
+      { id: "func-left", label: "左括号" },
+      { id: "func-page-down", label: "翻页" },
+      { id: "tone-1", label: "一声" },
+      { id: "tone-2", label: "二声" },
+      { id: "tone-3", label: "三声" },
+      { id: "tone-4", label: "四声" },
+      { id: "func-backslash", label: "包裹" },
+      { id: "func-right", label: "右括号" },
+    ],
+  },
+  {
+    title: "数字键盘",
+    keys: [
+      ..."123456789".split("").map((key) => ({
+        id: `numeric-${key}`,
+        label: key,
+      })),
+      { id: "numeric-abc", label: "ABC" },
+      { id: "numeric-0", label: "0" },
+      { id: "numeric-space", label: "空格" },
+      { id: "numeric-backspace", label: "Delete" },
+      { id: "numeric-dot", label: "小数点" },
+      { id: "numeric-equal", label: "等号" },
+      { id: "numeric-enter", label: "换行" },
+    ],
+  },
+];
+
+const HINT_COLOR_GROUPS = KEY_COLOR_GROUPS.filter((group) =>
+  group.title === "字母键" || group.title === "九键键盘"
+);
+
+function SettingHint({ children }: { children: any }) {
+  return <Text font="caption" foregroundStyle="secondaryLabel">{children}
+  </Text>;
+}
+
+function LabeledTextField(props: {
+  title: string;
+  value: string;
+  prompt?: string;
+  titleWidth?: number;
+  titleSymbol?: string;
+  onChanged: (value: string) => void;
+  draftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(props.value);
+  const value = props.draftKey ? draftValue : props.value;
+
+  function handleChanged(next: string) {
+    if (props.draftKey) {
+      setDraftValue(next);
+      props.onDraftChanged?.(props.draftKey, next);
+      return;
+    }
+    props.onChanged(next);
+  }
+
+  return (
+    <HStack
+      spacing={10}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <HStack
+        spacing={6}
+        frame={{
+          width: props.titleSymbol
+            ? Math.max(props.titleWidth ?? 76, 116)
+            : props.titleWidth ?? 76,
+          alignment: "leading" as any,
+        }}
+      >
+        <Text font="body" lineLimit={1}>{props.title}</Text>
+        {props.titleSymbol
+          ? <Image systemName={props.titleSymbol} font="body" />
+          : null}
+      </HStack>
+      <TextField
+        title=""
+        value={value}
+        prompt={props.prompt ?? ""}
+        onChanged={handleChanged}
+        frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+      />
+    </HStack>
+  );
+}
+
+function ColorPairConfigRow(props: {
+  title: string;
+  value: KeyColorPair;
+  overridden?: boolean;
+  resetVisible?: boolean;
+  onLightChanged: (value: string) => void;
+  onDarkChanged: (value: string) => void;
+  onReset?: () => void;
+}) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <HStack spacing={8}>
+        <Text font="headline">{props.title}</Text>
+        <Text
+          font="caption"
+          foregroundStyle="secondaryLabel"
+          frame={{ maxWidth: "infinity" as any, alignment: "trailing" as any }}
+        >
+          {props.overridden ? "单独设置" : "跟随默认"}
+        </Text>
+      </HStack>
+      <HStack spacing={12}>
+        <ColorPicker
+          title="浅色主题"
+          value={props.value.light as any}
+          supportsOpacity={false}
+          onChanged={(value) => props.onLightChanged(String(value))}
+        />
+        <ColorPicker
+          title="深色主题"
+          value={props.value.dark as any}
+          supportsOpacity={false}
+          onChanged={(value) => props.onDarkChanged(String(value))}
+        />
+      </HStack>
+      {(props.resetVisible || props.overridden) && props.onReset
+        ? (
+          <Button
+            title="恢复默认颜色"
+            systemImage="arrow.counterclockwise"
+            action={props.onReset}
+          />
+        )
+        : null}
+    </VStack>
+  );
+}
+
+function SwipeConfigRow(props: {
+  title: string;
+  action: string;
+  symbol: string;
+  mode: ActionSendMode;
+  onActionChanged: (value: string) => void;
+  onSymbolChanged: (value: string) => void;
+  onModeChanged: (value: ActionSendMode) => void;
+  actionDraftKey?: string;
+  symbolDraftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  const [actionDraft, setActionDraft] = useState(props.action);
+  const [symbolDraft, setSymbolDraft] = useState(props.symbol);
+
+  function handleActionChanged(next: string) {
+    if (props.actionDraftKey) {
+      setActionDraft(next);
+      props.onDraftChanged?.(props.actionDraftKey, next);
+      return;
+    }
+    props.onActionChanged(next);
+  }
+
+  function handleSymbolChanged(next: string) {
+    if (props.symbolDraftKey) {
+      setSymbolDraft(next);
+      props.onDraftChanged?.(props.symbolDraftKey, next);
+      return;
+    }
+    props.onSymbolChanged(next);
+  }
+
+  return (
+    <VStack
+      alignment="leading"
+      spacing={6}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <Text font="headline">{props.title}</Text>
+      <HStack spacing={10}>
+        <Text
+          font="caption"
+          foregroundStyle="secondaryLabel"
+          frame={{ width: 38, alignment: "leading" as any }}
+        >
+          动作
+        </Text>
+        <TextField
+          title=""
+          value={props.actionDraftKey ? actionDraft : props.action}
+          prompt="发送内容"
+          onChanged={handleActionChanged}
+        />
+      </HStack>
+      <Picker
+        title="发送方式"
+        value={props.mode}
+        onChanged={(value: string) =>
+          props.onModeChanged(value as ActionSendMode)}
+        pickerStyle="segmented"
+      >
+        {ACTION_MODE_OPTIONS.map((option) => (
+          <Text key={option.value} tag={option.value}>{option.label}</Text>
+        ))}
+      </Picker>
+      <HStack spacing={10}>
+        <HStack spacing={5} frame={{ width: 54, alignment: "leading" as any }}>
+          <Text font="caption" foregroundStyle="secondaryLabel" lineLimit={1}>
+            图标
+          </Text>
+          {props.symbol
+            ? <Image systemName={props.symbol} font="caption" />
+            : null}
+        </HStack>
+        <TextField
+          title=""
+          value={props.symbolDraftKey ? symbolDraft : props.symbol}
+          prompt="SF Symbol，可留空"
+          onChanged={handleSymbolChanged}
+        />
+      </HStack>
+    </VStack>
+  );
+}
+
+function CommandReferencePage() {
+  const [showCopiedToast, setShowCopiedToast] = useState(false);
+
+  function copyCommand(command: string) {
+    void Pasteboard.setString(command);
+    setShowCopiedToast(false);
+    setTimeout(() => setShowCopiedToast(true), 20);
+  }
+
+  return (
+    <List
+      navigationTitle="特殊命令"
+      navigationBarTitleDisplayMode="inline"
+      toast={{
+        isPresented: showCopiedToast,
+        onChanged: setShowCopiedToast,
+        message: "已复制命令",
+        duration: 1.2,
+        position: "bottom",
+      }}
+    >
+      {COMMAND_REFERENCE_GROUPS.map((group) => (
+        <Section
+          key={group.title}
+          header={<Text>{group.title}</Text>}
+        >
+          {group.items.map((item) => (
+            <Button
+              key={item.command}
+              action={() => copyCommand(item.command)}
+            >
+              <HStack
+                spacing={8}
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "leading" as any,
+                }}
+              >
+                <VStack
+                  alignment="leading"
+                  spacing={4}
+                  frame={{ alignment: "leading" as any }}
+                >
+                  <Text font="body" fontDesign="monospaced">
+                    {item.command}
+                  </Text>
+                  <Text font="caption" foregroundStyle="secondaryLabel">
+                    {item.description}
+                  </Text>
+                </VStack>
+                <Spacer />
+              </HStack>
+            </Button>
+          ))}
+        </Section>
+      ))}
+      <Section
+        footer={
+          <SettingHint>
+            “自动”模式会先识别上面的脚本特殊命令，再尝试按 Rime
+            按键名或普通文本发送；“发送给 Rime”会跳过脚本特殊命令，直接按 Rime
+            按键/文本处理。
+          </SettingHint>
+        }
+      />
+    </List>
+  );
+}
+
+type RimeConfigFile = {
+  root: string;
+  path: string;
+  name: string;
+};
+
+function readRimeConfigFiles(): RimeConfigFile[] {
+  const files: RimeConfigFile[] = [];
+  const seen = new Set<string>();
+  for (const root of scriptingRimeDataRoots()) {
+    try {
+      if (!FileManager.existsSync(root)) continue;
+      const names = FileManager.readDirectorySync(root, false)
+        .filter((name) =>
+          name.endsWith(".schema.yaml") ||
+          name.endsWith(".custom.yaml") ||
+          name.endsWith(".yaml")
+        )
+        .sort((a, b) => a.localeCompare(b));
+      for (const name of names) {
+        const path = Path.join(root, name);
+        if (seen.has(path) || !FileManager.isFileSync(path)) continue;
+        seen.add(path);
+        files.push({ root, path, name });
+      }
+    } catch {}
+  }
+  return files;
+}
+
+function RimeConfigEditorPage(props: { file: RimeConfigFile }) {
+  const controller = useMemo(() => {
+    let content = "";
+    try {
+      content = FileManager.readAsStringSync(props.file.path);
+    } catch {}
+    return new EditorController({
+      content,
+      ext: "txt",
+      readOnly: false,
+    });
+  }, [props.file.path]);
+  const [showSavedToast, setShowSavedToast] = useState(false);
+
+  useEffect(() => () => controller.dispose(), [controller]);
+
+  async function saveFile() {
+    try {
+      FileManager.writeAsStringSync(props.file.path, controller.content);
+      setShowSavedToast(false);
+      setTimeout(() => setShowSavedToast(true), 20);
+    } catch (error) {
+      await Dialog.alert({
+        title: "保存失败",
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  return (
+    <VStack
+      navigationTitle={props.file.name}
+      navigationBarTitleDisplayMode="inline"
+      toolbar={{
+        topBarTrailing: (
+          <Button
+            title=""
+            systemImage="checkmark.circle"
+            action={() => void saveFile()}
+          />
+        ),
+      }}
+      toast={{
+        isPresented: showSavedToast,
+        onChanged: setShowSavedToast,
+        message: "文件已保存",
+        duration: 1.2,
+        position: "bottom" as const,
+      }}
+    >
+      <Editor
+        controller={controller}
+        scriptName={Script.name}
+        showAccessoryView
+        searchEnabled
+        ignoresSafeArea={{ regions: "container", edges: "bottom" }}
+      />
+    </VStack>
+  );
+}
+
+function RimeSchemaDirectoryPage() {
+  const [files, setFiles] = useState<RimeConfigFile[]>(() =>
+    readRimeConfigFiles()
+  );
+
+  function reloadFiles() {
+    setFiles(readRimeConfigFiles());
+  }
+
+  return (
+    <List
+      navigationTitle="Rime 方案目录"
+      navigationBarTitleDisplayMode="inline"
+      toolbar={{
+        topBarTrailing: (
+          <Button
+            title=""
+            systemImage="arrow.clockwise"
+            action={reloadFiles}
+          />
+        ),
+      }}
+    >
+      <Section
+        footer={
+          <SettingHint>
+            请在目标九键方案的 engine.processors 下加入{" "}
+            {T9_PROCESSOR_SCHEMA_ENTRY}
+          </SettingHint>
+        }
+      >
+        {files.length === 0
+          ? <Text foregroundStyle="secondaryLabel">未找到 YAML 配置文件</Text>
+          : files.map((file) => (
+            <NavigationLink
+              key={file.path}
+              destination={<RimeConfigEditorPage file={file} />}
+            >
+              <VStack alignment="leading" spacing={4}>
+                <Text>{file.name}</Text>
+                <Text
+                  font="caption"
+                  foregroundStyle="secondaryLabel"
+                  lineLimit={1}
+                >
+                  {file.root}
+                </Text>
+              </VStack>
+            </NavigationLink>
+          ))}
+      </Section>
+    </List>
+  );
+}
+
+function ActionConfigRow(props: {
+  title: string;
+  action: string;
+  mode: ActionSendMode;
+  onActionChanged: (value: string) => void;
+  onModeChanged: (value: ActionSendMode) => void;
+  actionDraftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={6}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <LabeledTextField
+        title={props.title}
+        value={props.action}
+        titleWidth={126}
+        onChanged={props.onActionChanged}
+        draftKey={props.actionDraftKey}
+        onDraftChanged={props.onDraftChanged}
+      />
+      <Picker
+        title="发送方式"
+        value={props.mode}
+        onChanged={(value: string) =>
+          props.onModeChanged(value as ActionSendMode)}
+        pickerStyle="segmented"
+      >
+        {ACTION_MODE_OPTIONS.map((option) => (
+          <Text key={option.value} tag={option.value}>{option.label}</Text>
+        ))}
+      </Picker>
+    </VStack>
+  );
+}
+
+function CandidateMenuActionRow(props: {
+  index: number;
+  item: CandidateMenuAction;
+  onNameChanged: (value: string) => void;
+  onActionChanged: (value: string) => void;
+  onClear: () => void;
+  nameDraftKey?: string;
+  actionDraftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <HStack>
+        <Text font="headline">菜单 {props.index + 1}</Text>
+        <Button
+          title="清空"
+          systemImage="xmark.circle"
+          action={props.onClear}
+          buttonStyle="plain"
+        />
+      </HStack>
+      <LabeledTextField
+        title="名称"
+        value={props.item.name}
+        titleWidth={54}
+        onChanged={props.onNameChanged}
+        draftKey={props.nameDraftKey}
+        onDraftChanged={props.onDraftChanged}
+      />
+      <LabeledTextField
+        title="动作"
+        value={props.item.action}
+        titleWidth={54}
+        onChanged={props.onActionChanged}
+        draftKey={props.actionDraftKey}
+        onDraftChanged={props.onDraftChanged}
+      />
+    </VStack>
+  );
+}
+
+function T9PunctuationConfigRow(props: {
+  index: number;
+  item: T9PunctuationItem;
+  onModeChanged: (value: ActionSendMode) => void;
+  onReset: () => void;
+  onRemove?: () => void;
+  labelDraftKey: string;
+  actionDraftKey: string;
+  onDraftChanged: (key: string, value: string) => void;
+}) {
+  const defaults = DEFAULT_T9_PUNCTUATION_ITEMS[props.index];
+  const [labelDraft, setLabelDraft] = useState(props.item.label);
+  const [actionDraft, setActionDraft] = useState(props.item.action);
+  useEffect(() => {
+    setLabelDraft(props.item.label);
+    setActionDraft(props.item.action);
+  }, [props.item.label, props.item.action]);
+  function handleLabelChanged(value: string) {
+    setLabelDraft(value);
+    props.onDraftChanged(props.labelDraftKey, value);
+  }
+  function handleActionChanged(value: string) {
+    setActionDraft(value);
+    props.onDraftChanged(props.actionDraftKey, value);
+  }
+  function handleReset() {
+    if (defaults) {
+      setLabelDraft(defaults.label);
+      setActionDraft(defaults.action);
+    }
+    props.onReset();
+  }
+  const changed = !!defaults &&
+    (labelDraft !== defaults.label ||
+      actionDraft !== defaults.action ||
+      props.item.mode !== defaults.mode);
+  const removable = !defaults && props.onRemove;
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <HStack>
+        <Text font="headline">符号 {props.index + 1}</Text>
+        <Spacer />
+        {changed
+          ? (
+            <Button
+              title="重置"
+              systemImage="arrow.counterclockwise"
+              buttonStyle="plain"
+              action={handleReset}
+            />
+          )
+          : removable
+          ? (
+            <Button
+              title="删除"
+              systemImage="trash"
+              role="destructive"
+              buttonStyle="plain"
+              action={() => props.onRemove?.()}
+            />
+          )
+          : null}
+      </HStack>
+      <LabeledTextField
+        title="显示"
+        value={labelDraft}
+        prompt={defaults?.label ?? ""}
+        titleWidth={58}
+        onChanged={handleLabelChanged}
+      />
+      <LabeledTextField
+        title="动作"
+        value={actionDraft}
+        prompt={defaults?.action ?? ""}
+        titleWidth={58}
+        onChanged={handleActionChanged}
+      />
+      <Picker
+        title="发送方式"
+        value={props.item.mode}
+        onChanged={(value: string) =>
+          props.onModeChanged(value as ActionSendMode)}
+        pickerStyle="segmented"
+      >
+        {ACTION_MODE_OPTIONS.map((option) => (
+          <Text key={option.value} tag={option.value}>{option.label}</Text>
+        ))}
+      </Picker>
+    </VStack>
+  );
+}
+
+function SFSymbolPreviewRow(props: { symbol: string }) {
+  return (
+    <HStack>
+      <Text frame={{ width: 86, alignment: "leading" as any }}>
+        图标预览
+      </Text>
+      {props.symbol
+        ? <Image systemName={props.symbol} font="title2" />
+        : <Text foregroundStyle="secondaryLabel">未设置</Text>}
+      <Spacer />
+    </HStack>
+  );
+}
+
+function SFSymbolInputRow(props: {
+  title: string;
+  value: string;
+  onChanged: (value: string) => void;
+  draftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(props.value);
+  const value = props.draftKey ? draftValue : props.value;
+
+  function handleChanged(next: string) {
+    if (props.draftKey) {
+      setDraftValue(next);
+      props.onDraftChanged?.(props.draftKey, next);
+      return;
+    }
+    props.onChanged(next);
+  }
+
+  return (
+    <HStack
+      spacing={10}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <HStack spacing={6} frame={{ width: 116, alignment: "leading" as any }}>
+        <Text lineLimit={1}>{props.title}</Text>
+        {value ? <Image systemName={value} font="body" /> : null}
+      </HStack>
+      <TextField
+        title=""
+        value={value}
+        prompt=""
+        onChanged={handleChanged}
+        frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+      />
+    </HStack>
+  );
+}
+
+function FullRowButton(props: {
+  title: string;
+  systemImage?: string;
+  role?: "destructive" | "cancel";
+  action: () => void;
+}) {
+  return (
+    <Button
+      buttonStyle="plain"
+      role={props.role}
+      frame={{ maxWidth: "infinity" as any }}
+      action={props.action}
+    >
+      <HStack
+        spacing={8}
+        frame={{ width: "100%" as any }}
+        padding={{ top: 12, bottom: 12 }}
+        background={"rgba(0,0,0,0.001)" as any}
+      >
+        <Spacer />
+        {props.systemImage
+          ? <Image systemName={props.systemImage} font="body" />
+          : null}
+        <Text
+          font="headline"
+          foregroundStyle={props.role === "destructive"
+            ? "systemRed"
+            : undefined}
+        >
+          {props.title}
+        </Text>
+        <Spacer />
+      </HStack>
+    </Button>
+  );
+}
+
+function IconOnlyOrderRow(props: { symbol: string; index: number }) {
+  return (
+    <HStack
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      {props.symbol
+        ? <Image systemName={props.symbol} font="title3" />
+        : <Text foregroundStyle="secondaryLabel">未设置</Text>}
+      <Text opacity={0} frame={{ width: 1 }}>
+        .
+      </Text>
+      <Spacer />
+      <Text foregroundStyle="secondaryLabel">{props.index + 1}</Text>
+    </HStack>
+  );
+}
+
+function FunctionSwipeConfigRow(props: {
+  title: string;
+  pressAction?: string;
+  pressMode?: ActionSendMode;
+  symbol?: string;
+  upAction: string;
+  upMode: ActionSendMode;
+  downAction: string;
+  downMode: ActionSendMode;
+  onPressActionChanged?: (value: string) => void;
+  onPressModeChanged?: (value: ActionSendMode) => void;
+  onSymbolChanged?: (value: string) => void;
+  onUpActionChanged: (value: string) => void;
+  onUpModeChanged: (value: ActionSendMode) => void;
+  onDownActionChanged: (value: string) => void;
+  onDownModeChanged: (value: ActionSendMode) => void;
+  pressActionDraftKey?: string;
+  symbolDraftKey?: string;
+  upActionDraftKey?: string;
+  downActionDraftKey?: string;
+  onDraftChanged?: (key: string, value: string) => void;
+}) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
+    >
+      <Text font="headline">{props.title}</Text>
+      {props.pressAction != null && props.pressMode != null
+        ? (
+          <VStack
+            alignment="leading"
+            spacing={8}
+            frame={{
+              maxWidth: "infinity" as any,
+              alignment: "leading" as any,
+            }}
+          >
+            <LabeledTextField
+              title="点击动作"
+              value={props.pressAction}
+              titleWidth={78}
+              onChanged={(value) => props.onPressActionChanged?.(value)}
+              draftKey={props.pressActionDraftKey}
+              onDraftChanged={props.onDraftChanged}
+            />
+            <Picker
+              title="点击发送"
+              value={props.pressMode}
+              onChanged={(value: string) =>
+                props.onPressModeChanged?.(value as ActionSendMode)}
+              pickerStyle="segmented"
+            >
+              {ACTION_MODE_OPTIONS.map((option) => (
+                <Text key={option.value} tag={option.value}>
+                  {option.label}
+                </Text>
+              ))}
+            </Picker>
+          </VStack>
+        )
+        : null}
+      {props.symbol != null
+        ? (
+          <LabeledTextField
+            title="显示图标"
+            value={props.symbol}
+            titleWidth={78}
+            titleSymbol={props.symbol}
+            onChanged={(value) => props.onSymbolChanged?.(value)}
+            draftKey={props.symbolDraftKey}
+            onDraftChanged={props.onDraftChanged}
+          />
+        )
+        : null}
+      <LabeledTextField
+        title="上划动作"
+        value={props.upAction}
+        titleWidth={78}
+        onChanged={props.onUpActionChanged}
+        draftKey={props.upActionDraftKey}
+        onDraftChanged={props.onDraftChanged}
+      />
+      <Picker
+        title="上划发送"
+        value={props.upMode}
+        onChanged={(value: string) =>
+          props.onUpModeChanged(value as ActionSendMode)}
+        pickerStyle="segmented"
+      >
+        {ACTION_MODE_OPTIONS.map((option) => (
+          <Text key={option.value} tag={option.value}>{option.label}</Text>
+        ))}
+      </Picker>
+      <LabeledTextField
+        title="下划动作"
+        value={props.downAction}
+        titleWidth={78}
+        onChanged={props.onDownActionChanged}
+        draftKey={props.downActionDraftKey}
+        onDraftChanged={props.onDraftChanged}
+      />
+      <Picker
+        title="下划发送"
+        value={props.downMode}
+        onChanged={(value: string) =>
+          props.onDownModeChanged(value as ActionSendMode)}
+        pickerStyle="segmented"
+      >
+        {ACTION_MODE_OPTIONS.map((option) => (
+          <Text key={option.value} tag={option.value}>{option.label}</Text>
+        ))}
+      </Picker>
+    </VStack>
+  );
+}
+
+function SettingsView() {
+  const [settings, setSettings] = useState<RimeKeyboardSettings>(() =>
+    loadRimeKeyboardSettings()
+  );
+  const releaseNotesSheet = useMarkdownReleaseNotesSheet({
+    markdownFile: "changelog.md",
+    storageKey: "scripting-rime-keyboard:release-notes:last-seen-hash",
+    title: "更新内容",
+  });
+  const pendingTextDraftsRef = useRef<Record<string, string>>({});
+  const [showSavedToast, setShowSavedToast] = useState(false);
+  const functionOrderEditMode = useObservable(() => EditMode.inactive());
+  const toolbarEditMode = useObservable(() => EditMode.inactive());
+  const [functionOrderEditing, setFunctionOrderEditing] = useState(false);
+  const [toolbarEditing, setToolbarEditing] = useState(false);
+
+  function customThemeFlag(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    scheme: KeyColorScheme,
+  ) {
+    if (settingKey === "keyFontColors") {
+      return scheme === "light"
+        ? "customKeyFontColorLight"
+        : "customKeyFontColorDark";
+    }
+    if (settingKey === "keyHintColors") {
+      return scheme === "light"
+        ? "customKeyHintColorLight"
+        : "customKeyHintColorDark";
+    }
+    return scheme === "light" ? "customKeyColorLight" : "customKeyColorDark";
+  }
+
+  function updateSettings(next: RimeKeyboardSettings) {
+    const saved = saveRimeKeyboardSettings(next);
+    setSettings(saved);
+  }
+
+  function patchSettings(patch: Partial<RimeKeyboardSettings>) {
+    updateSettings({ ...settings, ...patch });
+  }
+
+  function recordTextDraft(key: string, value: string) {
+    pendingTextDraftsRef.current[key] = value;
+  }
+
+  function clonePathValue(value: any) {
+    if (Array.isArray(value)) return [...value];
+    if (value != null && typeof value === "object") return { ...value };
+    return {};
+  }
+
+  function applyTextDrafts(base: RimeKeyboardSettings) {
+    const drafts = pendingTextDraftsRef.current;
+    const entries = Object.entries(drafts);
+    if (entries.length === 0) return base;
+    const next = { ...base } as any;
+    for (const [path, value] of entries) {
+      const parts = path.split(".");
+      let cursor = next;
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        const part = parts[index];
+        cursor[part] = clonePathValue(cursor[part]);
+        cursor = cursor[part];
+      }
+      cursor[parts[parts.length - 1]] = value;
+    }
+    return next as RimeKeyboardSettings;
+  }
+
+  function saveTextDrafts() {
+    const next = applyTextDrafts(settings);
+    pendingTextDraftsRef.current = {};
+    updateSettings(next);
+    setShowSavedToast(false);
+    setTimeout(() => setShowSavedToast(true), 20);
+  }
+
+  function textInputToolbar(extra?: any) {
+    return {
+      topBarTrailing: (
+        <HStack spacing={12}>
+          {extra}
+          <Button
+            title="保存"
+            systemImage="checkmark.circle"
+            action={saveTextDrafts}
+          />
+        </HStack>
+      ),
+    };
+  }
+
+  function editModeButton(
+    isEditing: boolean,
+    setEditing: (value: boolean) => void,
+    editMode: any,
+  ) {
+    return (
+      <Button
+        title=""
+        systemImage={isEditing ? "checkmark.circle" : "pencil.circle"}
+        action={() => {
+          const next = !isEditing;
+          setEditing(next);
+          editMode.setValue(next ? EditMode.active() : EditMode.inactive());
+        }}
+      />
+    );
+  }
+
+  const savedToast = {
+    isPresented: showSavedToast,
+    onChanged: setShowSavedToast,
+    message: "设置已保存",
+    duration: 1.2,
+    position: "bottom" as const,
+  };
+
+  function setFunctionRowVisible(value: boolean) {
+    const next: RimeKeyboardSettings = {
+      ...settings,
+      showFunctionRow: value,
+      letterSwipeDown: { ...settings.letterSwipeDown },
+      letterSwipeDownSymbols: { ...settings.letterSwipeDownSymbols },
+      letterSwipeDownModes: { ...settings.letterSwipeDownModes },
+    };
+    for (const key of Object.keys(FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN)) {
+      if (value) {
+        if (
+          next.letterSwipeDown[key] ===
+            FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN[key]
+        ) {
+          next.letterSwipeDown[key] = DEFAULT_LETTER_SWIPE_DOWN[key];
+          next.letterSwipeDownModes[key] = "auto";
+        }
+        if (
+          next.letterSwipeDownSymbols[key] ===
+            FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN_SYMBOLS[key]
+        ) {
+          next.letterSwipeDownSymbols[key] =
+            DEFAULT_LETTER_SWIPE_DOWN_SYMBOLS[key];
+        }
+      } else {
+        if (next.letterSwipeDown[key] === DEFAULT_LETTER_SWIPE_DOWN[key]) {
+          next.letterSwipeDown[key] = FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN[key];
+          next.letterSwipeDownModes[key] = "auto";
+        }
+        if (
+          next.letterSwipeDownSymbols[key] ===
+            DEFAULT_LETTER_SWIPE_DOWN_SYMBOLS[key]
+        ) {
+          next.letterSwipeDownSymbols[key] =
+            FUNCTION_ROW_OFF_LETTER_SWIPE_DOWN_SYMBOLS[key];
+        }
+      }
+    }
+    updateSettings(next);
+  }
+
+  function patchKeyBaseColor(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    kind: "normal" | "enter",
+    scheme: KeyColorScheme,
+    value: string,
+  ) {
+    updateSettings({
+      ...settings,
+      [settingKey]: {
+        ...settings[settingKey],
+        [kind]: {
+          ...settings[settingKey][kind],
+          [scheme]: value,
+        },
+      },
+      [customThemeFlag(settingKey, scheme)]: true,
+    });
+  }
+
+  function cloneKeyColorSettings(defaults: KeyColorSettings): KeyColorSettings {
+    return {
+      normal: { ...defaults.normal },
+      enter: { ...defaults.enter },
+      overrides: {},
+    };
+  }
+
+  function resetKeyBackgroundColors() {
+    updateSettings({
+      ...settings,
+      customKeyColors: false,
+      customKeyColorLight: false,
+      customKeyColorDark: false,
+      keyColors: cloneKeyColorSettings(DEFAULT_KEY_COLORS),
+    });
+  }
+
+  function resetKeyFontColors() {
+    updateSettings({
+      ...settings,
+      customKeyFontColors: false,
+      customKeyFontColorLight: false,
+      customKeyFontColorDark: false,
+      keyFontColors: cloneKeyColorSettings(DEFAULT_KEY_FONT_COLORS),
+    });
+  }
+
+  function resetKeyHintColors() {
+    updateSettings({
+      ...settings,
+      customKeyHintColors: false,
+      customKeyHintColorLight: false,
+      customKeyHintColorDark: false,
+      keyHintColors: cloneKeyColorSettings(DEFAULT_KEY_HINT_COLORS),
+    });
+  }
+
+  function colorPairChanged(value: KeyColorPair, defaults: KeyColorPair) {
+    return value.light !== defaults.light || value.dark !== defaults.dark;
+  }
+
+  function resetKeyBaseColor(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    kind: "normal" | "enter",
+    defaults: KeyColorSettings,
+  ) {
+    updateSettings({
+      ...settings,
+      [settingKey]: {
+        ...settings[settingKey],
+        [kind]: { ...defaults[kind] },
+      },
+    });
+  }
+
+  function patchKeyOverrideColor(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    key: string,
+    scheme: KeyColorScheme,
+    fallback: KeyColorPair,
+    value: string,
+  ) {
+    updateSettings({
+      ...settings,
+      [settingKey]: {
+        ...settings[settingKey],
+        overrides: {
+          ...settings[settingKey].overrides,
+          [key]: {
+            ...(settings[settingKey].overrides[key] ?? fallback),
+            [scheme]: value,
+          },
+        },
+      },
+      [customThemeFlag(settingKey, scheme)]: true,
+    });
+  }
+
+  function resetKeyOverrideColor(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    key: string,
+  ) {
+    const { [key]: _, ...overrides } = settings[settingKey].overrides;
+    updateSettings({
+      ...settings,
+      [settingKey]: {
+        ...settings[settingKey],
+        overrides,
+      },
+    });
+  }
+
+  function patchSwipeMap(
+    key: keyof Pick<
+      RimeKeyboardSettings,
+      | "letterSwipeUp"
+      | "letterSwipeDown"
+      | "letterSwipeUpSymbols"
+      | "letterSwipeDownSymbols"
+      | "letterSwipeUpModes"
+      | "letterSwipeDownModes"
+      | "t9KeySwipeUp"
+      | "t9KeySwipeDown"
+      | "t9KeySwipeUpModes"
+      | "t9KeySwipeDownModes"
+      | "idleFunctionSwipeUp"
+      | "idleFunctionSwipeDown"
+      | "composingFunctionSwipeUp"
+      | "composingFunctionSwipeDown"
+      | "idleFunctionPress"
+      | "idleFunctionSymbols"
+      | "composingFunctionPress"
+      | "composingFunctionSymbols"
+      | "idleFunctionPressModes"
+      | "idleFunctionSwipeUpModes"
+      | "idleFunctionSwipeDownModes"
+      | "composingFunctionPressModes"
+      | "composingFunctionSwipeUpModes"
+      | "composingFunctionSwipeDownModes"
+    >,
+    actionKey: string,
+    value: string | ActionSendMode,
+  ) {
+    updateSettings({
+      ...settings,
+      [key]: {
+        ...settings[key],
+        [actionKey]: value,
+      },
+    });
+  }
+
+  function candidateMenuSlot(index: number): CandidateMenuAction {
+    return settings.candidateMenuActions[index] ?? { name: "", action: "" };
+  }
+
+  function patchCandidateMenuAction(
+    index: number,
+    patch: Partial<CandidateMenuAction>,
+  ) {
+    const actions = settings.candidateMenuActions.slice();
+    while (actions.length <= index) actions.push({ name: "", action: "" });
+    actions[index] = { ...actions[index], ...patch };
+    updateSettings({ ...settings, candidateMenuActions: actions });
+  }
+
+  function clearCandidateMenuAction(index: number) {
+    const actions = settings.candidateMenuActions.slice();
+    actions[index] = { name: "", action: "" };
+    updateSettings({ ...settings, candidateMenuActions: actions });
+  }
+
+  function t9PunctuationSlot(index: number): T9PunctuationItem {
+    return settings.t9PunctuationItems[index] ??
+      DEFAULT_T9_PUNCTUATION_ITEMS[index] ??
+      { label: "", action: "", mode: "rime" };
+  }
+
+  function t9PunctuationConfigCount() {
+    return Math.max(
+      DEFAULT_T9_PUNCTUATION_ITEMS.length,
+      settings.t9PunctuationItems.length,
+    );
+  }
+
+  function t9PunctuationConfigItems() {
+    return Array.from(
+      { length: t9PunctuationConfigCount() },
+      (_, index) => t9PunctuationSlot(index),
+    );
+  }
+
+  function patchT9PunctuationItem(
+    index: number,
+    patch: Partial<T9PunctuationItem>,
+  ) {
+    const items = settings.t9PunctuationItems.slice();
+    while (items.length <= index) {
+      items.push(
+        DEFAULT_T9_PUNCTUATION_ITEMS[items.length] ?? {
+          label: "",
+          action: "",
+          mode: "rime",
+        },
+      );
+    }
+    items[index] = { ...items[index], ...patch };
+    updateSettings({ ...settings, t9PunctuationItems: items });
+  }
+
+  function resetT9PunctuationItem(index: number) {
+    const defaults = DEFAULT_T9_PUNCTUATION_ITEMS[index];
+    if (!defaults) return;
+    delete pendingTextDraftsRef.current[`t9PunctuationItems.${index}.label`];
+    delete pendingTextDraftsRef.current[`t9PunctuationItems.${index}.action`];
+    const items = settings.t9PunctuationItems.slice();
+    while (items.length <= index) {
+      items.push(
+        DEFAULT_T9_PUNCTUATION_ITEMS[items.length] ?? {
+          label: "",
+          action: "",
+          mode: "rime",
+        },
+      );
+    }
+    items[index] = defaults;
+    updateSettings({ ...settings, t9PunctuationItems: items });
+  }
+
+  function addT9PunctuationItem() {
+    const items = t9PunctuationConfigItems();
+    updateSettings({
+      ...settings,
+      t9PunctuationItems: [
+        ...items,
+        { label: "", action: "", mode: "rime" },
+      ],
+    });
+  }
+
+  function removeT9PunctuationItem(index: number) {
+    delete pendingTextDraftsRef.current[`t9PunctuationItems.${index}.label`];
+    delete pendingTextDraftsRef.current[`t9PunctuationItems.${index}.action`];
+    const items = t9PunctuationConfigItems();
+    items.splice(index, 1);
+    updateSettings({ ...settings, t9PunctuationItems: items });
+  }
+
+  function patchToolbarButton(id: string, patch: Partial<ToolbarButtonConfig>) {
+    const buttons = settings.toolbarLeftButtons.slice();
+    const index = buttons.findIndex((item) => item.id === id);
+    if (!buttons[index]) return;
+    buttons[index] = { ...buttons[index], ...patch };
+    updateSettings({ ...settings, toolbarLeftButtons: buttons });
+  }
+
+  function removeToolbarButton(id: string) {
+    updateSettings({
+      ...settings,
+      toolbarLeftButtons: settings.toolbarLeftButtons.filter((item) =>
+        item.id !== id
+      ),
+    });
+  }
+
+  function addToolbarButton() {
+    if (settings.toolbarLeftButtons.length >= TOOLBAR_LEFT_BUTTON_MAX) return;
+    updateSettings({
+      ...settings,
+      toolbarLeftButtons: [
+        ...settings.toolbarLeftButtons,
+        { id: `custom-${Date.now()}`, symbol: "star", action: "" },
+      ],
+    });
+  }
+
+  function settingsExportFileName() {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `Scripting-Rime-Keyboard-Settings-${stamp}.json`;
+  }
+
+  async function exportSettings() {
+    try {
+      const directory = await DocumentPicker.pickDirectory();
+      if (!directory) return;
+      const current = normalizeRimeKeyboardSettings(applyTextDrafts(settings));
+      const filePath = Path.join(directory, settingsExportFileName());
+      await FileManager.writeAsString(
+        filePath,
+        JSON.stringify(current, null, 2),
+        "utf-8",
+      );
+      await Dialog.alert({
+        title: "导出完成",
+        message: `设置已导出到：${filePath}`,
+      });
+    } catch (error) {
+      await Dialog.alert({
+        title: "导出失败",
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  async function importSettings() {
+    try {
+      const files = await DocumentPicker.pickFiles({
+        types: ["public.json", "public.text"],
+        allowsMultipleSelection: false,
+      });
+      const filePath = files[0];
+      if (!filePath) return;
+      const raw = await FileManager.readAsString(filePath, "utf-8");
+      const imported = normalizeRimeKeyboardSettings(JSON.parse(raw));
+      const confirmed = await Dialog.confirm({
+        title: "导入设置",
+        message: "导入后会覆盖当前设置，确定继续吗？",
+        cancelLabel: "取消",
+        confirmLabel: "导入",
+      });
+      if (!confirmed) return;
+      pendingTextDraftsRef.current = {};
+      updateSettings(imported);
+      await Dialog.alert({
+        title: "导入完成",
+        message: "设置已导入，重新打开键盘后生效。",
+      });
+    } catch (error) {
+      await Dialog.alert({
+        title: "导入失败",
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  async function resetSettings() {
+    const confirmed = await Dialog.confirm({
+      title: "恢复默认设置",
+      message: "确定要恢复默认设置吗？当前自定义配置会被覆盖。",
+      cancelLabel: "取消",
+      confirmLabel: "恢复",
+    });
+    if (!confirmed) return;
+    pendingTextDraftsRef.current = {};
+    updateSettings(DEFAULT_RIME_KEYBOARD_SETTINGS);
+  }
+
+  async function copyPerformanceReport() {
+    const report = performanceDiagnosticsReport();
+    if (!report) {
+      await Dialog.alert({
+        title: "暂无性能数据",
+        message: "开启性能诊断并重新打开键盘，输入一段内容后再复制报告。",
+      });
+      return;
+    }
+    await Pasteboard.setString(report);
+    await Dialog.alert({
+      title: "已复制",
+      message: "性能报告已复制到剪贴板。",
+    });
+  }
+
+  async function clearPerformanceReport() {
+    const confirmed = await Dialog.confirm({
+      title: "清除性能报告",
+      message: "确定清除当前已采集的性能数据吗？",
+      cancelLabel: "取消",
+      confirmLabel: "清除",
+    });
+    if (!confirmed) return;
+    clearPerformanceDiagnostics();
+    await Dialog.alert({
+      title: "已清除",
+      message: "性能数据已清除。",
+    });
+  }
+
+  async function updateT9ProcessorLua() {
+    try {
+      const result = await ensureT9ProcessorLuaInstalled();
+      if (!result.ok) {
+        await Dialog.alert({
+          title: "更新失败",
+          message: "未能写入 t9_processor.lua，请确认 Rime 目录可访问。",
+        });
+        return;
+      }
+      setShowSavedToast(false);
+      setTimeout(() => setShowSavedToast(true), 20);
+      await Dialog.alert({
+        title: "更新完成",
+        message: `已覆盖 ${result.paths.length} 个 t9_processor.lua 文件。`,
+      });
+    } catch (error) {
+      await Dialog.alert({
+        title: "更新失败",
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  function openCommandReferencePage() {
+    void Navigation.present({
+      element: (
+        <NavigationStack>
+          <CommandReferencePage />
+        </NavigationStack>
+      ),
+    });
+  }
+
+  function renderAppearancePage() {
+    return (
+      <List
+        navigationTitle="键盘外观"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section header={<Text>基础外观</Text>}>
+          <Picker
+            title="主题"
+            value={settings.theme}
+            onChanged={(value: string) =>
+              patchSettings({ theme: value as RimeKeyboardTheme })}
+            pickerStyle="segmented"
+          >
+            {THEME_OPTIONS.map((option) => (
+              <Text key={option.value} tag={option.value}>{option.label}</Text>
+            ))}
+          </Picker>
+          <Picker
+            title="键盘类型"
+            value={settings.keyboardType}
+            onChanged={(value: string) =>
+              patchSettings({ keyboardType: value as KeyboardType })}
+            pickerStyle="segmented"
+          >
+            <Text tag="qwerty">26 键</Text>
+            <Text tag="t9">9 键</Text>
+          </Picker>
+          <Toggle
+            title="自定义键盘高度"
+            systemImage="arrow.up.and.down"
+            value={settings.useCustomKeyboardHeight}
+            onChanged={(value) =>
+              patchSettings({ useCustomKeyboardHeight: value })}
+          />
+          {settings.useCustomKeyboardHeight
+            ? (
+              <VStack alignment="leading" spacing={8}>
+                <HStack>
+                  <Text>键盘高度</Text>
+                  <Text
+                    font="subheadline"
+                    foregroundStyle="secondaryLabel"
+                    frame={{
+                      maxWidth: "infinity" as any,
+                      alignment: "trailing" as any,
+                    }}
+                  >
+                    {settings.keyboardHeight} pt
+                  </Text>
+                </HStack>
+                <Slider
+                  min={KEYBOARD_HEIGHT_MIN}
+                  max={KEYBOARD_HEIGHT_MAX}
+                  step={1}
+                  value={settings.keyboardHeight}
+                  onChanged={(value) =>
+                    patchSettings({ keyboardHeight: Math.round(value) })}
+                  label={<Text>键盘高度</Text>}
+                  minValueLabel={<Text>{KEYBOARD_HEIGHT_MIN}</Text>}
+                  maxValueLabel={<Text>{KEYBOARD_HEIGHT_MAX}</Text>}
+                />
+                <SettingHint>
+                  开启后键盘高度不再跟随 Scripting 键盘主界面的默认高度。
+                </SettingHint>
+              </VStack>
+            )
+            : null}
+          <Toggle
+            title="显示字母角标"
+            systemImage="textformat.123"
+            value={settings.showHintSymbols}
+            onChanged={(value) => patchSettings({ showHintSymbols: value })}
+          />
+          <Toggle
+            title="字母按键大写显示"
+            systemImage="textformat.size.larger"
+            value={settings.uppercaseLetterLabels}
+            onChanged={(value) =>
+              patchSettings({ uppercaseLetterLabels: value })}
+          />
+          <VStack alignment="leading" spacing={8}>
+            <HStack>
+              <Text>按钮间距</Text>
+              <Text
+                font="subheadline"
+                foregroundStyle="secondaryLabel"
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "trailing" as any,
+                }}
+              >
+                {settings.keyVisualInset.toFixed(2)} pt
+              </Text>
+            </HStack>
+            <Slider
+              min={KEY_VISUAL_INSET_MIN}
+              max={KEY_VISUAL_INSET_MAX}
+              step={0.01}
+              value={settings.keyVisualInset}
+              onChanged={(value) =>
+                patchSettings({
+                  keyVisualInset: Number(value),
+                })}
+              label={<Text>按钮间距</Text>}
+              minValueLabel={<Text>{KEY_VISUAL_INSET_MIN}</Text>}
+              maxValueLabel={<Text>{KEY_VISUAL_INSET_MAX}</Text>}
+            />
+            <SettingHint>
+              仅缩小按键显示区域，实际点按区域和键盘布局保持不变。
+            </SettingHint>
+          </VStack>
+          <Toggle
+            title="空格显示自定义内容"
+            systemImage="space"
+            value={settings.showWanxiangLabel}
+            onChanged={(value) => patchSettings({ showWanxiangLabel: value })}
+          />
+          {settings.showWanxiangLabel
+            ? (
+              <LabeledTextField
+                title="空格文字"
+                value={settings.spaceLabel}
+                prompt="万象"
+                onChanged={(value) => patchSettings({ spaceLabel: value })}
+                draftKey="spaceLabel"
+                onDraftChanged={recordTextDraft}
+              />
+            )
+            : null}
+        </Section>
+
+        <Section
+          header={<Text>按键样式</Text>}
+          footer={
+            <SettingHint>
+              开启后普通按键使用 Scripting 原生按钮样式；自定义按键颜色会覆盖在
+              glassEffect 上，工具栏按钮可单独控制。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="使用原生按键样式"
+            systemImage="button.programmable"
+            value={settings.useNativeKeyStyle}
+            onChanged={(value) => patchSettings({ useNativeKeyStyle: value })}
+          />
+          {settings.useNativeKeyStyle
+            ? (
+              <Toggle
+                title="工具栏按钮原生样式"
+                systemImage="circle.grid.2x2"
+                value={settings.useNativeToolbarStyle}
+                onChanged={(value) =>
+                  patchSettings({ useNativeToolbarStyle: value })}
+              />
+            )
+            : null}
+        </Section>
+
+        <Section
+          header={<Text>按键背景色</Text>}
+          footer={
+            <SettingHint>
+              关闭时使用键盘原始配色，并跟随上方主题；开启后才使用下面的浅色/深色颜色选择。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="启用自定义按键颜色"
+            systemImage="paintpalette"
+            value={settings.customKeyColors}
+            onChanged={(value) => patchSettings({ customKeyColors: value })}
+          />
+          <Button
+            title="重置按键背景色"
+            systemImage="arrow.counterclockwise"
+            action={resetKeyBackgroundColors}
+          />
+        </Section>
+
+        {settings.customKeyColors
+          ? (
+            <>
+              <Section
+                header={<Text>按键背景色 · 生效主题</Text>}
+                footer={
+                  <SettingHint>
+                    只开启需要自定义的主题。未开启的主题继续使用键盘原始配色。
+                  </SettingHint>
+                }
+              >
+                <Toggle
+                  title="浅色主题使用自定义颜色"
+                  systemImage="sun.max"
+                  value={settings.customKeyColorLight}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyColorLight: value })}
+                />
+                <Toggle
+                  title="深色主题使用自定义颜色"
+                  systemImage="moon"
+                  value={settings.customKeyColorDark}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyColorDark: value })}
+                />
+              </Section>
+
+              <Section
+                header={<Text>按键背景色 · 统一默认</Text>}
+                footer={
+                  <SettingHint>
+                    普通按键用于未单独配置的按键；回车按键用于底部回车和数字键盘提交键。
+                  </SettingHint>
+                }
+              >
+                <ColorPairConfigRow
+                  title="普通按键"
+                  value={settings.keyColors.normal}
+                  resetVisible={colorPairChanged(
+                    settings.keyColors.normal,
+                    DEFAULT_KEY_COLORS.normal,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor("keyColors", "normal", "light", value)}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyColors", "normal", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyColors",
+                      "normal",
+                      DEFAULT_KEY_COLORS,
+                    )}
+                />
+                <ColorPairConfigRow
+                  title="回车按键"
+                  value={settings.keyColors.enter}
+                  resetVisible={colorPairChanged(
+                    settings.keyColors.enter,
+                    DEFAULT_KEY_COLORS.enter,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor("keyColors", "enter", "light", value)}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyColors", "enter", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyColors",
+                      "enter",
+                      DEFAULT_KEY_COLORS,
+                    )}
+                />
+              </Section>
+
+              <Section header={<Text>按键背景色 · 单键覆盖</Text>}>
+                {KEY_COLOR_GROUPS.map((group) => (
+                  <NavigationLink
+                    key={"color-link-" + group.title}
+                    title={group.title}
+                    destination={renderKeyColorPage(
+                      "keyColors",
+                      group,
+                      "按键背景色",
+                    )}
+                  />
+                ))}
+                <NavigationLink
+                  title="工具栏"
+                  destination={renderToolbarColorPage(
+                    "keyColors",
+                    "工具栏按钮背景色",
+                  )}
+                />
+              </Section>
+            </>
+          )
+          : null}
+
+        <Section
+          header={<Text>按键字体颜色</Text>}
+          footer={
+            <SettingHint>
+              关闭时使用键盘原始配色，并跟随上方主题；开启后才使用下面的浅色/深色颜色选择。
+              原生按键样式开启时，字体颜色仍可自定义。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="启用自定义按键字体颜色"
+            systemImage="textformat"
+            value={settings.customKeyFontColors}
+            onChanged={(value) => patchSettings({ customKeyFontColors: value })}
+          />
+          <Button
+            title="重置按键字体颜色"
+            systemImage="arrow.counterclockwise"
+            action={resetKeyFontColors}
+          />
+        </Section>
+
+        {settings.customKeyFontColors
+          ? (
+            <>
+              <Section
+                header={<Text>按键字体颜色 · 生效主题</Text>}
+                footer={
+                  <SettingHint>
+                    只开启需要自定义的主题。未开启的主题继续使用键盘原始配色。
+                  </SettingHint>
+                }
+              >
+                <Toggle
+                  title="浅色主题使用自定义颜色"
+                  systemImage="sun.max"
+                  value={settings.customKeyFontColorLight}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyFontColorLight: value })}
+                />
+                <Toggle
+                  title="深色主题使用自定义颜色"
+                  systemImage="moon"
+                  value={settings.customKeyFontColorDark}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyFontColorDark: value })}
+                />
+              </Section>
+
+              <Section
+                header={<Text>按键字体颜色 · 统一默认</Text>}
+              >
+                <ColorPairConfigRow
+                  title="普通按键"
+                  value={settings.keyFontColors.normal}
+                  resetVisible={colorPairChanged(
+                    settings.keyFontColors.normal,
+                    DEFAULT_KEY_FONT_COLORS.normal,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor(
+                      "keyFontColors",
+                      "normal",
+                      "light",
+                      value,
+                    )}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyFontColors", "normal", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyFontColors",
+                      "normal",
+                      DEFAULT_KEY_FONT_COLORS,
+                    )}
+                />
+                <ColorPairConfigRow
+                  title="回车按键"
+                  value={settings.keyFontColors.enter}
+                  resetVisible={colorPairChanged(
+                    settings.keyFontColors.enter,
+                    DEFAULT_KEY_FONT_COLORS.enter,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor("keyFontColors", "enter", "light", value)}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyFontColors", "enter", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyFontColors",
+                      "enter",
+                      DEFAULT_KEY_FONT_COLORS,
+                    )}
+                />
+              </Section>
+
+              <Section header={<Text>按键字体颜色 · 单键覆盖</Text>}>
+                {KEY_COLOR_GROUPS.map((group) => (
+                  <NavigationLink
+                    key={"font-color-link-" + group.title}
+                    title={group.title}
+                    destination={renderKeyColorPage(
+                      "keyFontColors",
+                      group,
+                      "按键字体颜色",
+                    )}
+                  />
+                ))}
+                <NavigationLink
+                  title="工具栏"
+                  destination={renderToolbarFontColorPage()}
+                />
+              </Section>
+            </>
+          )
+          : null}
+
+        <Section
+          header={<Text>角标颜色</Text>}
+          footer={
+            <SettingHint>
+              关闭时使用键盘原始配色，并跟随上方主题；开启后才使用下面的浅色/深色颜色选择。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="启用自定义角标颜色"
+            systemImage="tag"
+            value={settings.customKeyHintColors}
+            onChanged={(value) => patchSettings({ customKeyHintColors: value })}
+          />
+          <Button
+            title="重置角标颜色"
+            systemImage="arrow.counterclockwise"
+            action={resetKeyHintColors}
+          />
+        </Section>
+
+        {settings.customKeyHintColors
+          ? (
+            <>
+              <Section
+                header={<Text>角标颜色 · 生效主题</Text>}
+                footer={
+                  <SettingHint>
+                    只开启需要自定义的主题。未开启的主题继续使用键盘原始配色。
+                  </SettingHint>
+                }
+              >
+                <Toggle
+                  title="浅色主题使用自定义颜色"
+                  systemImage="sun.max"
+                  value={settings.customKeyHintColorLight}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyHintColorLight: value })}
+                />
+                <Toggle
+                  title="深色主题使用自定义颜色"
+                  systemImage="moon"
+                  value={settings.customKeyHintColorDark}
+                  onChanged={(value) =>
+                    patchSettings({ customKeyHintColorDark: value })}
+                />
+              </Section>
+
+              <Section
+                header={<Text>角标颜色 · 统一默认</Text>}
+              >
+                <ColorPairConfigRow
+                  title="普通按键"
+                  value={settings.keyHintColors.normal}
+                  resetVisible={colorPairChanged(
+                    settings.keyHintColors.normal,
+                    DEFAULT_KEY_HINT_COLORS.normal,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor(
+                      "keyHintColors",
+                      "normal",
+                      "light",
+                      value,
+                    )}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyHintColors", "normal", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyHintColors",
+                      "normal",
+                      DEFAULT_KEY_HINT_COLORS,
+                    )}
+                />
+                <ColorPairConfigRow
+                  title="回车按键"
+                  value={settings.keyHintColors.enter}
+                  resetVisible={colorPairChanged(
+                    settings.keyHintColors.enter,
+                    DEFAULT_KEY_HINT_COLORS.enter,
+                  )}
+                  onLightChanged={(value) =>
+                    patchKeyBaseColor("keyHintColors", "enter", "light", value)}
+                  onDarkChanged={(value) =>
+                    patchKeyBaseColor("keyHintColors", "enter", "dark", value)}
+                  onReset={() =>
+                    resetKeyBaseColor(
+                      "keyHintColors",
+                      "enter",
+                      DEFAULT_KEY_HINT_COLORS,
+                    )}
+                />
+              </Section>
+
+              <Section header={<Text>角标颜色 · 单键覆盖</Text>}>
+                {HINT_COLOR_GROUPS.map((group) => (
+                  <NavigationLink
+                    key={"hint-color-link-" + group.title}
+                    title={group.title}
+                    destination={renderKeyColorPage(
+                      "keyHintColors",
+                      group,
+                      "角标颜色",
+                    )}
+                  />
+                ))}
+              </Section>
+            </>
+          )
+          : null}
+      </List>
+    );
+  }
+
+  function renderToolbarColorPage(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    pageTitle: string,
+  ) {
+    const toolbarKeys = [
+      ...settings.toolbarLeftButtons.map((item, index) => ({
+        id: `toolbar-left-${item.id}`,
+        label: `左侧按钮 ${index + 1}`,
+      })),
+      { id: "candidate-right", label: "右侧按钮" },
+    ];
+    return renderKeyColorPage(
+      settingKey,
+      { title: "工具栏", keys: toolbarKeys },
+      pageTitle,
+    );
+  }
+
+  function renderToolbarFontColorPage() {
+    return renderToolbarColorPage("keyFontColors", "工具栏图标颜色");
+  }
+
+  function renderKeyColorPage(
+    settingKey: "keyColors" | "keyFontColors" | "keyHintColors",
+    group: typeof KEY_COLOR_GROUPS[number],
+    pageTitle: string,
+  ) {
+    return (
+      <List
+        navigationTitle={pageTitle + " · " + group.title}
+        navigationBarTitleDisplayMode="inline"
+      >
+        <Section>
+          {group.keys.map((item) => {
+            const fallback = item.id === "enter" || item.id === "numeric-enter"
+              ? settings[settingKey].enter
+              : settings[settingKey].normal;
+            const override = settings[settingKey].overrides[item.id];
+            return (
+              <ColorPairConfigRow
+                key={"color-" + item.id}
+                title={item.label}
+                value={override ?? fallback}
+                overridden={override != null}
+                onLightChanged={(value) =>
+                  patchKeyOverrideColor(
+                    settingKey,
+                    item.id,
+                    "light",
+                    fallback,
+                    value,
+                  )}
+                onDarkChanged={(value) =>
+                  patchKeyOverrideColor(
+                    settingKey,
+                    item.id,
+                    "dark",
+                    fallback,
+                    value,
+                  )}
+                onReset={() => resetKeyOverrideColor(settingKey, item.id)}
+              />
+            );
+          })}
+        </Section>
+      </List>
+    );
+  }
+
+  function renderCandidatePage() {
+    return (
+      <List
+        navigationTitle="候选与预编辑"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section header={<Text>候选栏</Text>}>
+          <VStack alignment="leading" spacing={8}>
+            <HStack>
+              <Text>候选栏高度</Text>
+              <Text
+                font="subheadline"
+                foregroundStyle="secondaryLabel"
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "trailing" as any,
+                }}
+              >
+                {settings.candidateBarHeight} pt
+              </Text>
+            </HStack>
+            <Slider
+              min={CANDIDATE_BAR_HEIGHT_MIN}
+              max={CANDIDATE_BAR_HEIGHT_MAX}
+              step={1}
+              value={settings.candidateBarHeight}
+              onChanged={(value) =>
+                patchSettings({ candidateBarHeight: Math.round(value) })}
+              label={<Text>候选栏高度</Text>}
+              minValueLabel={<Text>{CANDIDATE_BAR_HEIGHT_MIN}</Text>}
+              maxValueLabel={<Text>{CANDIDATE_BAR_HEIGHT_MAX}</Text>}
+            />
+          </VStack>
+          <Picker
+            title="候选栏右侧按钮"
+            value={settings.candidateRightButtonMode}
+            onChanged={(value: string) =>
+              patchSettings({
+                candidateRightButtonMode: value as CandidateRightButtonMode,
+              })}
+            pickerStyle="menu"
+          >
+            {CANDIDATE_RIGHT_BUTTON_OPTIONS.map((option) => (
+              <Text key={option.value} tag={option.value}>{option.label}</Text>
+            ))}
+          </Picker>
+          <Toggle
+            title="显示候选注释"
+            systemImage="text.bubble"
+            value={settings.showCandidateComment}
+            onChanged={(value) =>
+              patchSettings({ showCandidateComment: value })}
+          />
+          <Toggle
+            title="显示预编辑脱字符"
+            systemImage="text.cursor"
+            value={settings.showPreeditCaret}
+            onChanged={(value) => patchSettings({ showPreeditCaret: value })}
+          />
+        </Section>
+        <Section
+          header={<Text>候选词长按菜单</Text>}
+          footer={
+            <SettingHint>
+              关闭自定义时使用默认菜单；开启自定义后只显示已填写名称和动作的菜单项。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="自定义菜单"
+            systemImage="list.bullet.rectangle"
+            value={settings.candidateMenuCustomEnabled}
+            onChanged={(value) =>
+              patchSettings({ candidateMenuCustomEnabled: value })}
+          />
+          {!settings.candidateMenuCustomEnabled
+            ? (
+              <VStack
+                alignment="leading"
+                spacing={4}
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "leading" as any,
+                }}
+              >
+                {DEFAULT_CANDIDATE_MENU_ACTIONS.map((item) => (
+                  <Text
+                    key={item.name}
+                    font="caption"
+                    foregroundStyle="secondaryLabel"
+                  >
+                    {item.name}：{item.action}
+                  </Text>
+                ))}
+              </VStack>
+            )
+            : null}
+        </Section>
+        {settings.candidateMenuCustomEnabled
+          ? (
+            <Section header={<Text>候选菜单动作</Text>}>
+              {Array.from({ length: 5 }, (_, index) => {
+                const item = candidateMenuSlot(index);
+                return (
+                  <CandidateMenuActionRow
+                    key={index}
+                    index={index}
+                    item={item}
+                    onNameChanged={(value) =>
+                      patchCandidateMenuAction(index, { name: value })}
+                    onActionChanged={(value) =>
+                      patchCandidateMenuAction(index, { action: value })}
+                    onClear={() => clearCandidateMenuAction(index)}
+                    nameDraftKey={`candidateMenuActions.${index}.name`}
+                    actionDraftKey={`candidateMenuActions.${index}.action`}
+                    onDraftChanged={recordTextDraft}
+                  />
+                );
+              })}
+            </Section>
+          )
+          : null}
+        <Section
+          header={<Text>预编辑</Text>}
+          footer={
+            <SettingHint>
+              开启后拼音显示在光标位置；关闭后拼音显示在键盘候选栏上方。
+            </SettingHint>
+          }
+        >
+          <Toggle
+            title="内嵌模式"
+            systemImage="text.cursor"
+            value={settings.inlinePreedit}
+            onChanged={(value) => patchSettings({ inlinePreedit: value })}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderInputFeedbackPage() {
+    return (
+      <List navigationTitle="输入反馈" navigationBarTitleDisplayMode="inline">
+        <Section>
+          <Toggle
+            title="显示功能行"
+            systemImage="rectangle.split.3x1"
+            value={settings.showFunctionRow}
+            onChanged={setFunctionRowVisible}
+          />
+          {settings.showFunctionRow
+            ? (
+              <Toggle
+                title="启用预编辑功能行"
+                systemImage="text.cursor"
+                value={settings.composingFunctionRowEnabled}
+                onChanged={(value) =>
+                  patchSettings({ composingFunctionRowEnabled: value })}
+              />
+            )
+            : null}
+          <Toggle
+            title="显示按键气泡"
+            systemImage="bubble.left"
+            value={settings.showKeyPopups}
+            onChanged={(value) =>
+              patchSettings({ showKeyPopups: value })}
+          />
+          <VStack alignment="leading" spacing={8}>
+            <HStack>
+              <Text>字母长按时长</Text>
+              <Text
+                font="subheadline"
+                foregroundStyle="secondaryLabel"
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "trailing" as any,
+                }}
+              >
+                {settings.letterLongPressDuration} ms
+              </Text>
+            </HStack>
+            <Slider
+              min={LETTER_LONG_PRESS_DURATION_MIN}
+              max={LETTER_LONG_PRESS_DURATION_MAX}
+              step={10}
+              value={settings.letterLongPressDuration}
+              onChanged={(value) =>
+                patchSettings({
+                  letterLongPressDuration: Math.round(value / 10) * 10,
+                })}
+              label={<Text>字母长按时长</Text>}
+              minValueLabel={<Text>短</Text>}
+              maxValueLabel={<Text>长</Text>}
+            />
+          </VStack>
+          <VStack alignment="leading" spacing={8}>
+            <HStack>
+              <Text>上下划触发距离</Text>
+              <Text
+                font="subheadline"
+                foregroundStyle="secondaryLabel"
+                frame={{
+                  maxWidth: "infinity" as any,
+                  alignment: "trailing" as any,
+                }}
+              >
+                {settings.swipeTriggerDistance} pt
+              </Text>
+            </HStack>
+            <Slider
+              min={SWIPE_TRIGGER_DISTANCE_MIN}
+              max={SWIPE_TRIGGER_DISTANCE_MAX}
+              step={1}
+              value={settings.swipeTriggerDistance}
+              onChanged={(value) =>
+                patchSettings({ swipeTriggerDistance: Math.round(value) })}
+              label={<Text>上下划触发距离</Text>}
+              minValueLabel={<Text>灵敏</Text>}
+              maxValueLabel={<Text>稳妥</Text>}
+            />
+          </VStack>
+          <Toggle
+            title="系统按键音"
+            systemImage="speaker.wave.2"
+            value={settings.inputClicks}
+            onChanged={(value) =>
+              patchSettings({
+                inputClicks: value,
+                hapticEngineClicks: value ? false : settings.hapticEngineClicks,
+              })}
+          />
+          <Toggle
+            title="震动引擎按键音"
+            systemImage="waveform"
+            value={settings.hapticEngineClicks}
+            onChanged={(value) =>
+              patchSettings({
+                hapticEngineClicks: value,
+                inputClicks: value ? false : settings.inputClicks,
+              })}
+          />
+          <SettingHint>
+            两种按键音互斥。系统按键音会进行轻量节流，避免快速输入时与触感反馈叠加造成爆音；震动引擎按键音使用
+            Core Haptics 音频反馈。
+          </SettingHint>
+          <Toggle
+            title="触感反馈"
+            systemImage="iphone.radiowaves.left.and.right"
+            value={settings.haptics}
+            onChanged={(value) =>
+              patchSettings({ haptics: value })}
+          />
+          {settings.haptics
+            ? (
+              <VStack alignment="leading" spacing={8}>
+                <HStack>
+                  <Text>震动反馈强度</Text>
+                  <Text
+                    font="subheadline"
+                    foregroundStyle="secondaryLabel"
+                    frame={{
+                      maxWidth: "infinity" as any,
+                      alignment: "trailing" as any,
+                    }}
+                  >
+                    {settings.hapticLevel.toFixed(1)}
+                  </Text>
+                </HStack>
+                <Slider
+                  min={HAPTIC_LEVEL_MIN}
+                  max={HAPTIC_LEVEL_MAX}
+                  step={0.1}
+                  value={settings.hapticLevel}
+                  onChanged={(value) =>
+                    patchSettings({
+                      hapticLevel: Math.round(value * 10) / 10,
+                    })}
+                  label={<Text>震动反馈强度</Text>}
+                  minValueLabel={<Text>弱</Text>}
+                  maxValueLabel={<Text>强</Text>}
+                />
+              </VStack>
+            )
+            : null}
+          <Toggle
+            title="显示通知"
+            systemImage="bell"
+            value={settings.showNotifications}
+            onChanged={(value) => patchSettings({ showNotifications: value })}
+          />
+          <Toggle
+            title="键盘启动时轻量部署"
+            systemImage="checkmark.seal"
+            value={settings.autoDeployOnLaunch}
+            onChanged={(value) => patchSettings({ autoDeployOnLaunch: value })}
+          />
+        </Section>
+        <Section header={<Text>性能诊断</Text>}>
+          <Toggle
+            title="性能诊断"
+            systemImage="gauge.with.dots.needle.50percent"
+            value={settings.performanceDiagnostics}
+            onChanged={(value) =>
+              patchSettings({ performanceDiagnostics: value })}
+          />
+          {settings.performanceDiagnostics
+            ? (
+              <Group>
+                <Button
+                  title="复制性能报告"
+                  systemImage="doc.on.doc"
+                  action={() => void copyPerformanceReport()}
+                />
+                <Button
+                  title="清除性能报告"
+                  systemImage="trash"
+                  action={() => void clearPerformanceReport()}
+                />
+              </Group>
+            )
+            : null}
+        </Section>
+      </List>
+    );
+  }
+
+  function renderShiftPage() {
+    return (
+      <List
+        navigationTitle="Shift 行为"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section>
+          <Toggle
+            title="预编辑时使用包裹键"
+            systemImage="shift"
+            value={settings.shiftComposingEnabled}
+            onChanged={(value) =>
+              patchSettings({ shiftComposingEnabled: value })}
+          />
+          <ActionConfigRow
+            title="预编辑点击动作"
+            action={settings.shiftComposingKey}
+            mode={settings.shiftComposingKeyMode}
+            onActionChanged={(value) =>
+              patchSettings({ shiftComposingKey: value })}
+            onModeChanged={(value) =>
+              patchSettings({ shiftComposingKeyMode: value })}
+            actionDraftKey="shiftComposingKey"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="预编辑上划动作"
+            action={settings.shiftComposingSwipeUp}
+            mode={settings.shiftComposingSwipeUpMode}
+            onActionChanged={(value) =>
+              patchSettings({ shiftComposingSwipeUp: value })}
+            onModeChanged={(value) =>
+              patchSettings({ shiftComposingSwipeUpMode: value })}
+            actionDraftKey="shiftComposingSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+          <LabeledTextField
+            title="预编辑图标"
+            value={settings.shiftComposingIcon}
+            prompt="SF Symbol"
+            titleSymbol={settings.shiftComposingIcon}
+            onChanged={(value) => patchSettings({ shiftComposingIcon: value })}
+            draftKey="shiftComposingIcon"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderModeKeyPage() {
+    return (
+      <List
+        navigationTitle="中英键预编辑行为"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section>
+          <Toggle
+            title="预编辑时使用提示键"
+            systemImage="lightbulb"
+            value={settings.modeComposingEnabled}
+            onChanged={(value) =>
+              patchSettings({ modeComposingEnabled: value })}
+          />
+          <ActionConfigRow
+            title="点击动作"
+            action={settings.modeComposingAction}
+            mode={settings.modeComposingActionMode}
+            onActionChanged={(value) =>
+              patchSettings({ modeComposingAction: value })}
+            onModeChanged={(value) =>
+              patchSettings({ modeComposingActionMode: value })}
+            actionDraftKey="modeComposingAction"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="上划动作"
+            action={settings.modeComposingSwipeUp}
+            mode={settings.modeComposingSwipeUpMode}
+            onActionChanged={(value) =>
+              patchSettings({ modeComposingSwipeUp: value })}
+            onModeChanged={(value) =>
+              patchSettings({ modeComposingSwipeUpMode: value })}
+            actionDraftKey="modeComposingSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="下划动作"
+            action={settings.modeComposingSwipeDown}
+            mode={settings.modeComposingSwipeDownMode}
+            onActionChanged={(value) =>
+              patchSettings({ modeComposingSwipeDown: value })}
+            onModeChanged={(value) =>
+              patchSettings({ modeComposingSwipeDownMode: value })}
+            actionDraftKey="modeComposingSwipeDown"
+            onDraftChanged={recordTextDraft}
+          />
+          <LabeledTextField
+            title="显示图标"
+            value={settings.modeComposingIcon}
+            prompt="lightbulb"
+            titleSymbol={settings.modeComposingIcon}
+            onChanged={(value) => patchSettings({ modeComposingIcon: value })}
+            draftKey="modeComposingIcon"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderBackspacePage() {
+    return (
+      <List
+        navigationTitle="删除键行为"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section
+          footer={
+            <SettingHint>
+              默认：左划删除预编辑拼音，上划删除当前可删除文本，预编辑上划清空预编辑拼音，下划恢复最近删除内容。
+            </SettingHint>
+          }
+        >
+          <ActionConfigRow
+            title="左划动作"
+            action={settings.backspaceSwipeLeft}
+            mode={settings.backspaceSwipeLeftMode}
+            onActionChanged={(value) =>
+              patchSettings({ backspaceSwipeLeft: value })}
+            onModeChanged={(value) =>
+              patchSettings({ backspaceSwipeLeftMode: value })}
+            actionDraftKey="backspaceSwipeLeft"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="上划动作"
+            action={settings.backspaceSwipeUp}
+            mode={settings.backspaceSwipeUpMode}
+            onActionChanged={(value) =>
+              patchSettings({ backspaceSwipeUp: value })}
+            onModeChanged={(value) =>
+              patchSettings({ backspaceSwipeUpMode: value })}
+            actionDraftKey="backspaceSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="预编辑上划"
+            action={settings.backspaceComposingSwipeUp}
+            mode={settings.backspaceComposingSwipeUpMode}
+            onActionChanged={(value) =>
+              patchSettings({ backspaceComposingSwipeUp: value })}
+            onModeChanged={(value) =>
+              patchSettings({ backspaceComposingSwipeUpMode: value })}
+            actionDraftKey="backspaceComposingSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="下划动作"
+            action={settings.backspaceSwipeDown}
+            mode={settings.backspaceSwipeDownMode}
+            onActionChanged={(value) =>
+              patchSettings({ backspaceSwipeDown: value })}
+            onModeChanged={(value) =>
+              patchSettings({ backspaceSwipeDownMode: value })}
+            actionDraftKey="backspaceSwipeDown"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderNumericPage() {
+    return (
+      <List
+        navigationTitle="数字键盘"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section
+          footer={
+            <SettingHint>
+              “=” 键上划固定发送给 Rime，用于触发万象方案计算器等功能。
+            </SettingHint>
+          }
+        >
+          <LabeledTextField
+            title="= 上划"
+            value={settings.numericEqualsSwipeUp}
+            prompt="V"
+            onChanged={(value) =>
+              patchSettings({ numericEqualsSwipeUp: value })}
+            draftKey="numericEqualsSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderT9Page() {
+    return (
+      <List
+        navigationTitle="九键键盘"
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section header={<Text>Processor</Text>}>
+          <Button
+            title="更新 T9 Processor"
+            systemImage="arrow.triangle.2.circlepath"
+            action={() => void updateT9ProcessorLua()}
+          />
+          <Button
+            title="复制 processor 配置"
+            systemImage="doc.on.doc"
+            action={() => {
+              void Pasteboard.setString(T9_PROCESSOR_SCHEMA_ENTRY);
+              setShowSavedToast(false);
+              setTimeout(() => setShowSavedToast(true), 20);
+            }}
+          />
+          <NavigationLink
+            title="打开 Rime 方案目录"
+            destination={<RimeSchemaDirectoryPage />}
+          />
+        </Section>
+        <Section
+          header={<Text>空格划动</Text>}
+          footer={
+            <SettingHint>
+              预编辑且有候选时，空格上划/下划仍优先用于二选/三选上屏；无预编辑时使用这里的动作。
+            </SettingHint>
+          }
+        >
+          <ActionConfigRow
+            title="上划"
+            action={settings.t9SpaceSwipeUp}
+            mode={settings.t9SpaceSwipeUpMode}
+            onActionChanged={(value) =>
+              patchSettings({ t9SpaceSwipeUp: value })}
+            onModeChanged={(value) =>
+              patchSettings({ t9SpaceSwipeUpMode: value })}
+            actionDraftKey="t9SpaceSwipeUp"
+            onDraftChanged={recordTextDraft}
+          />
+          <ActionConfigRow
+            title="下划"
+            action={settings.t9SpaceSwipeDown}
+            mode={settings.t9SpaceSwipeDownMode}
+            onActionChanged={(value) =>
+              patchSettings({ t9SpaceSwipeDown: value })}
+            onModeChanged={(value) =>
+              patchSettings({ t9SpaceSwipeDownMode: value })}
+            actionDraftKey="t9SpaceSwipeDown"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+        <Section
+          header={<Text>九键按键划动</Text>}
+          footer={
+            <SettingHint>
+              默认上划直接上屏对应数字；下划默认无动作。
+            </SettingHint>
+          }
+        >
+          {T9_KEY_IDS.map((key) => (
+            <VStack
+              key={`t9-key-swipe-${key}`}
+              alignment="leading"
+              spacing={8}
+              frame={{
+                maxWidth: "infinity" as any,
+                alignment: "leading" as any,
+              }}
+            >
+              <Text font="headline">按键 {key}</Text>
+              <ActionConfigRow
+                title="上划"
+                action={settings.t9KeySwipeUp[key]}
+                mode={settings.t9KeySwipeUpModes[key]}
+                onActionChanged={(value) =>
+                  patchSwipeMap("t9KeySwipeUp", key, value)}
+                onModeChanged={(value) =>
+                  patchSwipeMap("t9KeySwipeUpModes", key, value)}
+                actionDraftKey={`t9KeySwipeUp.${key}`}
+                onDraftChanged={recordTextDraft}
+              />
+              <ActionConfigRow
+                title="下划"
+                action={settings.t9KeySwipeDown[key]}
+                mode={settings.t9KeySwipeDownModes[key]}
+                onActionChanged={(value) =>
+                  patchSwipeMap("t9KeySwipeDown", key, value)}
+                onModeChanged={(value) =>
+                  patchSwipeMap("t9KeySwipeDownModes", key, value)}
+                actionDraftKey={`t9KeySwipeDown.${key}`}
+                onDraftChanged={recordTextDraft}
+              />
+            </VStack>
+          ))}
+        </Section>
+        <Section
+          header={<Text>左侧符号列</Text>}
+          footer={
+            <SettingHint>
+              键盘左侧一次显示 4
+              个符号，可滚动显示更多；预编辑时会临时显示拼音选择。
+            </SettingHint>
+          }
+        >
+          {t9PunctuationConfigItems().map((item, index) => {
+            return (
+              <T9PunctuationConfigRow
+                key={index}
+                index={index}
+                item={item}
+                onModeChanged={(value) =>
+                  patchT9PunctuationItem(index, { mode: value })}
+                onReset={() => resetT9PunctuationItem(index)}
+                onRemove={index >= DEFAULT_T9_PUNCTUATION_ITEMS.length
+                  ? () => removeT9PunctuationItem(index)
+                  : undefined}
+                labelDraftKey={`t9PunctuationItems.${index}.label`}
+                actionDraftKey={`t9PunctuationItems.${index}.action`}
+                onDraftChanged={recordTextDraft}
+              />
+            );
+          })}
+          <Button
+            title="添加符号"
+            systemImage="plus.circle"
+            action={addT9PunctuationItem}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderLetterSwipePage(direction: "up" | "down") {
+    const isUp = direction === "up";
+    return (
+      <List
+        navigationTitle={isUp ? "字母上划" : "字母下划"}
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section
+          footer={isUp
+            ? (
+              <SettingHint>
+                “自动”会先识别脚本特殊值，再按 Rime 按键/文本发送；“发送给
+                Rime”会强制走 Rime.processKey；“直接上屏”会绕过 Rime。
+              </SettingHint>
+            )
+            : undefined}
+        >
+          {LETTER_KEYS.map((key) => (
+            <SwipeConfigRow
+              key={(isUp ? "up-" : "down-") + key}
+              title={key.toUpperCase() + (isUp ? " 键上划" : " 键下划")}
+              action={isUp
+                ? settings.letterSwipeUp[key]
+                : settings.letterSwipeDown[key]}
+              symbol={isUp
+                ? settings.letterSwipeUpSymbols[key]
+                : settings.letterSwipeDownSymbols[key]}
+              mode={isUp
+                ? settings.letterSwipeUpModes[key]
+                : settings.letterSwipeDownModes[key]}
+              onActionChanged={(value) =>
+                patchSwipeMap(
+                  isUp ? "letterSwipeUp" : "letterSwipeDown",
+                  key,
+                  value,
+                )}
+              onSymbolChanged={(value) =>
+                patchSwipeMap(
+                  isUp ? "letterSwipeUpSymbols" : "letterSwipeDownSymbols",
+                  key,
+                  value,
+                )}
+              onModeChanged={(value) =>
+                patchSwipeMap(
+                  isUp ? "letterSwipeUpModes" : "letterSwipeDownModes",
+                  key,
+                  value,
+                )}
+              actionDraftKey={`${
+                isUp ? "letterSwipeUp" : "letterSwipeDown"
+              }.${key}`}
+              symbolDraftKey={`${
+                isUp ? "letterSwipeUpSymbols" : "letterSwipeDownSymbols"
+              }.${key}`}
+              onDraftChanged={recordTextDraft}
+            />
+          ))}
+        </Section>
+      </List>
+    );
+  }
+
+  function renderFunctionSwipePage(composing: boolean) {
+    const keys = composing ? COMPOSING_FUNCTION_KEYS : FUNCTION_KEYS;
+    return (
+      <List
+        navigationTitle={composing ? "功能键 · 预编辑" : "功能键 · 无预编辑"}
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        {composing
+          ? (
+            <Section
+              footer={
+                <SettingHint>
+                  开启后，按下包裹键会切换 26
+                  键包裹显示；关闭后只发送配置的点击动作。
+                </SettingHint>
+              }
+            >
+              <Toggle
+                title="包裹键启用包裹显示"
+                systemImage="viewfinder"
+                value={settings.composingFunctionWrapDisplayEnabled}
+                onChanged={(value) =>
+                  patchSettings({
+                    composingFunctionWrapDisplayEnabled: value,
+                  })}
+              />
+            </Section>
+          )
+          : null}
+        <Section
+          footer={!composing
+            ? (
+              <SettingHint>
+                可用特殊值：{"{left}"}、{"{right}"}、{"{home}"}、{"{end}"}、{"{selectAll}"}、{"{toggleSelectAll}"}、{"{cut}"}、{"{copy}"}、{"{paste}"}、{"{rimeUp}"}、{"{rimeDown}"}、{"{rimePageUp}"}、{"{rimePageDown}"}、{"{clearComposition}"}、{"{deleteAll}"}、{"{restoreDeleted}"}。
+                也可直接填写 Rime 按键名，例如
+                Break、Page_Up、Page_Down、backslash，或组合键 Control+grave。
+              </SettingHint>
+            )
+            : undefined}
+        >
+          {keys.map((key) => (
+            <FunctionSwipeConfigRow
+              key={(composing ? "comp-func-" : "idle-func-") + key}
+              title={FUNCTION_KEY_LABELS[key]}
+              pressAction={composing
+                ? settings.composingFunctionPress[key]
+                : settings.idleFunctionPress[key]}
+              pressMode={composing
+                ? settings.composingFunctionPressModes[key]
+                : settings.idleFunctionPressModes[key]}
+              symbol={composing
+                ? settings.composingFunctionSymbols[key]
+                : settings.idleFunctionSymbols[key]}
+              upAction={composing
+                ? settings.composingFunctionSwipeUp[key]
+                : settings.idleFunctionSwipeUp[key]}
+              upMode={composing
+                ? settings.composingFunctionSwipeUpModes[key]
+                : settings.idleFunctionSwipeUpModes[key]}
+              downAction={composing
+                ? settings.composingFunctionSwipeDown[key]
+                : settings.idleFunctionSwipeDown[key]}
+              downMode={composing
+                ? settings.composingFunctionSwipeDownModes[key]
+                : settings.idleFunctionSwipeDownModes[key]}
+              onPressActionChanged={composing
+                ? (value) => patchSwipeMap("composingFunctionPress", key, value)
+                : (value) => patchSwipeMap("idleFunctionPress", key, value)}
+              onPressModeChanged={composing
+                ? (value) =>
+                  patchSwipeMap("composingFunctionPressModes", key, value)
+                : (value) =>
+                  patchSwipeMap("idleFunctionPressModes", key, value)}
+              onSymbolChanged={composing
+                ? (value) =>
+                  patchSwipeMap("composingFunctionSymbols", key, value)
+                : (value) => patchSwipeMap("idleFunctionSymbols", key, value)}
+              onUpActionChanged={(value) =>
+                patchSwipeMap(
+                  composing
+                    ? "composingFunctionSwipeUp"
+                    : "idleFunctionSwipeUp",
+                  key,
+                  value,
+                )}
+              onUpModeChanged={(value) =>
+                patchSwipeMap(
+                  composing
+                    ? "composingFunctionSwipeUpModes"
+                    : "idleFunctionSwipeUpModes",
+                  key,
+                  value,
+                )}
+              onDownActionChanged={(value) =>
+                patchSwipeMap(
+                  composing
+                    ? "composingFunctionSwipeDown"
+                    : "idleFunctionSwipeDown",
+                  key,
+                  value,
+                )}
+              onDownModeChanged={(value) =>
+                patchSwipeMap(
+                  composing
+                    ? "composingFunctionSwipeDownModes"
+                    : "idleFunctionSwipeDownModes",
+                  key,
+                  value,
+                )}
+              pressActionDraftKey={`${
+                composing ? "composingFunctionPress" : "idleFunctionPress"
+              }.${key}`}
+              symbolDraftKey={`${
+                composing ? "composingFunctionSymbols" : "idleFunctionSymbols"
+              }.${key}`}
+              upActionDraftKey={`${
+                composing ? "composingFunctionSwipeUp" : "idleFunctionSwipeUp"
+              }.${key}`}
+              downActionDraftKey={`${
+                composing
+                  ? "composingFunctionSwipeDown"
+                  : "idleFunctionSwipeDown"
+              }.${key}`}
+              onDraftChanged={recordTextDraft}
+            />
+          ))}
+        </Section>
+      </List>
+    );
+  }
+
+  function renderFunctionOrderPage() {
+    return (
+      <List
+        navigationTitle="功能行排序"
+        navigationBarTitleDisplayMode="inline"
+        environments={{ editMode: functionOrderEditMode }}
+        toolbar={{
+          topBarTrailing: editModeButton(
+            functionOrderEditing,
+            setFunctionOrderEditing,
+            functionOrderEditMode,
+          ),
+        }}
+      >
+        <Section
+          header={<Text>无预编辑</Text>}
+          footer={<SettingHint>点右上角编辑后拖动排序。</SettingHint>}
+        >
+          <ForEach
+            count={settings.idleFunctionOrder.length}
+            onMove={(indices: number[], newOffset: number) =>
+              patchSettings({
+                idleFunctionOrder: moveItems(
+                  settings.idleFunctionOrder,
+                  indices,
+                  newOffset,
+                ),
+              })}
+            itemBuilder={(index: number) => {
+              const key = settings.idleFunctionOrder[index];
+              return (
+                <IconOnlyOrderRow
+                  symbol={settings.idleFunctionSymbols[key]}
+                  index={index}
+                />
+              );
+            }}
+          />
+        </Section>
+        <Section
+          header={<Text>预编辑</Text>}
+          footer={<SettingHint>预编辑功能行会使用这一组顺序。</SettingHint>}
+        >
+          <ForEach
+            count={settings.composingFunctionOrder.length}
+            onMove={(indices: number[], newOffset: number) =>
+              patchSettings({
+                composingFunctionOrder: moveItems(
+                  settings.composingFunctionOrder,
+                  indices,
+                  newOffset,
+                ),
+              })}
+            itemBuilder={(index: number) => {
+              const key = settings.composingFunctionOrder[index];
+              return (
+                <IconOnlyOrderRow
+                  symbol={settings.composingFunctionSymbols[key]}
+                  index={index}
+                />
+              );
+            }}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function ToolbarButtonEditor(props: { id: string }) {
+    const dismiss = Navigation.useDismiss();
+    const index = settings.toolbarLeftButtons.findIndex((item) =>
+      item.id === props.id
+    );
+    const item = settings.toolbarLeftButtons[index] ?? {
+      id: props.id,
+      symbol: "",
+      action: "",
+    };
+    return (
+      <List
+        navigationTitle={`左侧按钮 ${index + 1}`}
+        navigationBarTitleDisplayMode="inline"
+        toolbar={textInputToolbar()}
+        toast={savedToast}
+      >
+        <Section
+          footer={
+            <SettingHint>
+              动作支持{" "}
+              {"{keyboardHome}"}、{"{keyboardSettings}"}、{"{schemaMenu}"}、{"{dismissKeyboard}"}，
+              也支持 keyboard:脚本名、https:// 链接、url:https:// 链接，以及
+              script:脚本名、js:脚本。js: 脚本中可使用 ctx.clipboard 或模板变量
+              {" "}
+              {"{clipboard}"}；需要上屏时请手动调用 ctx.insertText(text)。
+            </SettingHint>
+          }
+        >
+          <LabeledTextField
+            title="SF Symbol"
+            value={item.symbol}
+            titleWidth={86}
+            onChanged={(value) =>
+              patchToolbarButton(props.id, { symbol: value })}
+            draftKey={`toolbarLeftButtons.${index}.symbol`}
+            onDraftChanged={recordTextDraft}
+          />
+          <SFSymbolPreviewRow symbol={item.symbol} />
+          <LabeledTextField
+            title="点击动作"
+            value={item.action}
+            titleWidth={86}
+            onChanged={(value) =>
+              patchToolbarButton(props.id, { action: value })}
+            draftKey={`toolbarLeftButtons.${index}.action`}
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+        <Section>
+          <FullRowButton
+            title="删除按钮"
+            systemImage="trash"
+            role="destructive"
+            action={() => {
+              removeToolbarButton(props.id);
+              dismiss();
+            }}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  function renderToolbarPage() {
+    return (
+      <List
+        navigationTitle="工具栏"
+        navigationBarTitleDisplayMode="inline"
+        environments={{ editMode: toolbarEditMode }}
+        toolbar={textInputToolbar(
+          editModeButton(toolbarEditing, setToolbarEditing, toolbarEditMode),
+        )}
+        toast={savedToast}
+      >
+        <Section
+          header={<Text>左侧按钮</Text>}
+          footer={
+            <SettingHint>
+              点右上角编辑后拖动排序；最多显示 6 个左侧按钮。SF Symbol
+              或动作为空的按钮不会显示在键盘工具栏中。
+            </SettingHint>
+          }
+        >
+          <ForEach
+            count={settings.toolbarLeftButtons.length}
+            onMove={(indices: number[], newOffset: number) =>
+              patchSettings({
+                toolbarLeftButtons: moveItems(
+                  settings.toolbarLeftButtons,
+                  indices,
+                  newOffset,
+                ),
+              })}
+            itemBuilder={(index: number) => {
+              const item = settings.toolbarLeftButtons[index];
+              return (
+                <NavigationLink
+                  key={`toolbar-left-setting-${item?.id ?? index}`}
+                  destination={<ToolbarButtonEditor id={item?.id ?? ""} />}
+                >
+                  <IconOnlyOrderRow symbol={item?.symbol ?? ""} index={index} />
+                </NavigationLink>
+              );
+            }}
+          />
+          {settings.toolbarLeftButtons.length < TOOLBAR_LEFT_BUTTON_MAX
+            ? (
+              <Button
+                title="添加按钮"
+                systemImage="plus.circle"
+                action={addToolbarButton}
+              />
+            )
+            : null}
+        </Section>
+        <Section
+          header={<Text>右侧按钮</Text>}
+          footer={
+            <SettingHint>
+              右侧按钮位置固定。选择“收起键盘”时可自定义收起图标；选择“展开候选”时使用展开图标。
+            </SettingHint>
+          }
+        >
+          <SFSymbolInputRow
+            title="收起图标"
+            value={settings.toolbarDismissSymbol}
+            onChanged={(value) =>
+              patchSettings({ toolbarDismissSymbol: value })}
+            draftKey="toolbarDismissSymbol"
+            onDraftChanged={recordTextDraft}
+          />
+          <SFSymbolInputRow
+            title="展开图标"
+            value={settings.toolbarExpandSymbol}
+            onChanged={(value) => patchSettings({ toolbarExpandSymbol: value })}
+            draftKey="toolbarExpandSymbol"
+            onDraftChanged={recordTextDraft}
+          />
+        </Section>
+      </List>
+    );
+  }
+
+  return (
+    <NavigationStack>
+      <List
+        navigationTitle="Scripting Rime Keyboard"
+        navigationBarTitleDisplayMode="inline"
+        sheet={releaseNotesSheet}
+        toolbar={{
+          topBarTrailing: (
+            <Button
+              title=""
+              systemImage="info.circle"
+              action={openCommandReferencePage}
+            />
+          ),
+        }}
+      >
+        <Section header={<Text>键盘</Text>}>
+          <NavigationLink
+            title="键盘外观与颜色"
+            destination={renderAppearancePage()}
+          />
+          <NavigationLink
+            title="候选与预编辑"
+            destination={renderCandidatePage()}
+          />
+          <NavigationLink
+            title="输入反馈"
+            destination={renderInputFeedbackPage()}
+          />
+        </Section>
+        <Section header={<Text>按键行为</Text>}>
+          <NavigationLink title="Shift 行为" destination={renderShiftPage()} />
+          <NavigationLink
+            title="中英键预编辑行为"
+            destination={renderModeKeyPage()}
+          />
+          <NavigationLink
+            title="删除键行为"
+            destination={renderBackspacePage()}
+          />
+          <NavigationLink title="数字键盘" destination={renderNumericPage()} />
+          <NavigationLink title="九键键盘" destination={renderT9Page()} />
+        </Section>
+        <Section header={<Text>字母上下划</Text>}>
+          <NavigationLink
+            title="字母上划"
+            destination={renderLetterSwipePage("up")}
+          />
+          <NavigationLink
+            title="字母下划"
+            destination={renderLetterSwipePage("down")}
+          />
+        </Section>
+        {settings.showFunctionRow
+          ? (
+            <Section header={<Text>功能行</Text>}>
+              <NavigationLink
+                title="排序"
+                destination={renderFunctionOrderPage()}
+              />
+              <NavigationLink
+                title="无预编辑"
+                destination={renderFunctionSwipePage(false)}
+              />
+              {settings.composingFunctionRowEnabled
+                ? (
+                  <NavigationLink
+                    title="预编辑"
+                    destination={renderFunctionSwipePage(true)}
+                  />
+                )
+                : null}
+            </Section>
+          )
+          : null}
+        <Section header={<Text>工具栏</Text>}>
+          <NavigationLink
+            title="工具栏按钮"
+            destination={renderToolbarPage()}
+          />
+        </Section>
+        <Section
+          footer={
+            <VStack alignment="leading" spacing={4}>
+              <SettingHint>
+                设置保存在脚本专用 Storage，键盘扩展会在下次打开时读取。
+              </SettingHint>
+              <SettingHint>
+                请在系统键盘列表中启用 Scripting，并打开完全访问。
+              </SettingHint>
+            </VStack>
+          }
+        >
+          <Button
+            title="导入设置"
+            systemImage="square.and.arrow.down"
+            action={() => void importSettings()}
+          />
+          <Button
+            title="导出设置"
+            systemImage="square.and.arrow.up"
+            action={() => void exportSettings()}
+          />
+          <Button role="destructive" action={() => void resetSettings()}>
+            <HStack spacing={8}>
+              <Image
+                systemName="arrow.counterclockwise"
+                foregroundStyle="systemRed"
+              />
+              <Text foregroundStyle="systemRed">恢复默认设置</Text>
+            </HStack>
+          </Button>
+        </Section>
+      </List>
+    </NavigationStack>
+  );
+}
+
+async function run() {
+  const page = String((Script.queryParameters as any)?.page ?? "");
+  if (page === "rime-schemas") {
+    await Navigation.present(
+      <NavigationStack>
+        <RimeSchemaDirectoryPage />
+      </NavigationStack>,
+    );
+    Script.exit();
+    return;
+  }
+  await Navigation.present(<SettingsView />);
+  Script.exit();
+}
+
+void run();
