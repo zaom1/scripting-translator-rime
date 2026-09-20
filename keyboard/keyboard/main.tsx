@@ -390,10 +390,9 @@ function t9VisualDelimiterOffset(cursor: number, positions: number[]) {
     .length;
 }
 
-// 模型选择顶部行：组件自身高度 150；打开时键盘整体加高并按 166 预留
-// （多出的余量吸收 VStack 间距，避免底部被挤掉），使字母键尺寸不变、且不被遮挡。
-const MODEL_PICKER_ROW_HEIGHT = 150;
-const MODEL_PICKER_RESERVE = 166;
+// 模型选择面板：替换功能键行位置，高度等于 functionKeyHeight，
+// QWERTY 三行字母键完全不被遮挡，用户可直接点击字母键搜索过滤。
+const MODEL_PICKER_EXTRA = 8; // 比功能键行多一点点空间给标题
 
 export function KeyboardView() {
   return (
@@ -558,40 +557,15 @@ function KeyboardContent(props: {
   ) {
     performanceDiagnosticsRef.current = new KeyboardPerformanceDiagnostics();
   }
-  // 首次（关闭态）测得的自然键盘高度，作为加高/还原的基准，避免被加高后的值污染。
-  const baseKeyboardHeightRef = useRef<number | null>(null);
   const metrics = useMemo(
     () =>
       keyboardMetrics(
         settings,
-        modelPickerOpen
-          ? (props.availableHeight ?? 326) - MODEL_PICKER_RESERVE
-          : props.availableHeight,
+        props.availableHeight,
         props.availableWidth,
       ),
-    [settings, props.availableHeight, props.availableWidth, modelPickerOpen],
+    [settings, props.availableHeight, props.availableWidth],
   );
-
-  useEffect(() => {
-    if (
-      baseKeyboardHeightRef.current == null &&
-      !modelPickerOpen &&
-      typeof props.availableHeight === "number" &&
-      props.availableHeight > 0
-    ) {
-      baseKeyboardHeightRef.current = props.availableHeight;
-    }
-  }, [modelPickerOpen, props.availableHeight]);
-
-  useEffect(() => {
-    const base = baseKeyboardHeightRef.current;
-    if (base == null) return;
-    try {
-      CustomKeyboard.requestHeight(
-        modelPickerOpen ? base + MODEL_PICKER_RESERVE : base,
-      );
-    } catch {}
-  }, [modelPickerOpen]);
 
   useEffect(() => {
     clearQueuedKeyboardActions();
@@ -4753,18 +4727,6 @@ function KeyboardContent(props: {
           maxHeight: "infinity" as any,
         }}
       >
-        {modelPickerOpen
-          ? (
-            <ModelPickerSurface
-              height={MODEL_PICKER_ROW_HEIGHT}
-              activeLabel={activeModelLabel}
-              query={modelSearchQuery}
-              onClearQuery={() => setModelSearchQuery("")}
-              onPick={handleModelPick}
-              onClose={() => setModelPickerOpen(false)}
-            />
-          )
-          : null}
         <CandidateHeader
           controller={rimeViewStateControllerRef.current!}
           settings={settings}
@@ -4797,7 +4759,18 @@ function KeyboardContent(props: {
             opacity={candidateExpanded ? 0 : 1}
           >
             <Group>
-              {cachedFunctionRow}
+              {modelPickerOpen
+                ? (
+                  <ModelPickerSurface
+                    height={metrics.functionKeyHeight + MODEL_PICKER_EXTRA}
+                    activeLabel={activeModelLabel}
+                    query={modelSearchQuery}
+                    onClearQuery={() => setModelSearchQuery("")}
+                    onPick={handleModelPick}
+                    onClose={() => setModelPickerOpen(false)}
+                  />
+                )
+                : cachedFunctionRow}
 
               {symbolLayer
                 ? (
