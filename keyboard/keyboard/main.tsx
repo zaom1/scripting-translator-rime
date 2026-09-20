@@ -3561,7 +3561,7 @@ function KeyboardContent(props: {
     if (entry.kind === "assistant") {
       return {
         kind: "assistant",
-        providerId: String(entry.assistantProviderId ?? "openai"),
+        providerId: String(entry.assistantProviderId ?? "app_default"),
         customProvider: String(entry.assistantCustomProvider ?? ""),
         modelId: String(entry.assistantModelId ?? ""),
       };
@@ -3652,13 +3652,22 @@ function KeyboardContent(props: {
     const assistant = (globalThis as any).Assistant;
     if (!assistant?.requestStreaming) throw new Error("当前环境不支持 Assistant");
 
-    // 自定义 provider 必须用 { custom: "名称" } 对象形式传给 App 原生 Assistant；
-    // 传纯字符串会被当作内置 provider 名而报 "unknown api provider"。
-    // 若仍报 "custom api provider 名称 not found"，是该名称未在 App 的 Assistant
-    // 模型选择器中注册，需在 App 端配置，脚本无法绕过。
-    const provider = model.providerId === "custom"
-      ? (model.customProvider ? { custom: model.customProvider } : undefined)
-      : model.providerId;
+    // provider 取值（据官方 Assistant 文档）：内置名 / { custom: 名称 } / 省略（用 App 默认）。
+    // 纯字符串自定义名（如 "agnes1"）直传会被 App 当作内置名报 unknown api provider，
+    // 所以除内置名外，任何非空字符串都必须包成 { custom: 名称 }。
+    const BUILTIN_PROVIDERS = ["openai", "gemini", "anthropic", "deepseek", "openrouter"];
+    const trimmedProviderId = String(model.providerId ?? "").trim();
+    const trimmedCustom = String(model.customProvider ?? "").trim();
+    let provider: string | { custom: string } | undefined;
+    if (!trimmedProviderId || trimmedProviderId === "app_default") {
+      provider = undefined;
+    } else if (trimmedProviderId === "custom") {
+      provider = trimmedCustom ? { custom: trimmedCustom } : undefined;
+    } else if (BUILTIN_PROVIDERS.includes(trimmedProviderId)) {
+      provider = trimmedProviderId;
+    } else {
+      provider = { custom: trimmedProviderId };
+    }
 
     const stream = await assistant.requestStreaming({
       systemPrompt,

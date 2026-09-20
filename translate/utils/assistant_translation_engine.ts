@@ -57,15 +57,26 @@ export function createAssistantTranslationEngine(config?: TranslationEngineConfi
   const providerId = config?.assistantProviderId ?? "app_default"
   const customProvider = String(config?.assistantCustomProvider ?? "").trim()
   const modelId = String(config?.assistantModelId ?? "").trim()
-  // provider 取值（据官方 Assistant 文档）：内置名 / { custom: 名称 } / 省略。
-  // - app_default：不传 provider，直接用 App 模型选择器里当前选定的默认供应商
-  //   （你在 App 里配好并选为默认的 agnes1 会走这条，避开按名字查找导致的 not found）。
-  // - custom：显式传 { custom: 名称 }（纯字符串不被支持，会被当作内置名报 unknown）。
-  const provider = providerId === "app_default"
-    ? undefined
-    : providerId === "custom"
-      ? (customProvider ? { custom: customProvider } : undefined)
-      : providerId
+  // provider 取值（据官方 Assistant 文档）：内置名 / { custom: 名称 } / 省略（用 App 默认）。
+  // 纯字符串自定义名（如 "agnes1"）直传会被 App 当作内置名报 unknown api provider，
+  // 所以除内置名外，任何非空字符串都必须包成 { custom: 名称 }。
+  // 三种 config 情况统一兜底：
+  // - app_default / 空：省略 provider，走 App 模型选择器当前默认供应商。
+  // - custom：取 assistantCustomProvider 作为供应商标识。
+  // - 内置名（openai/gemini/anthropic/deepseek/openrouter）：直传。
+  // - 其它裸名（如系统翻译路径里 assistantProviderId 直接存了 "agnes1"）：当作自定义供应商包成 { custom: 名称 }。
+  const BUILTIN_PROVIDERS = ["openai", "gemini", "anthropic", "deepseek", "openrouter"]
+  const trimmedProviderId = String(providerId ?? "").trim()
+  let provider: string | { custom: string } | undefined
+  if (!trimmedProviderId || trimmedProviderId === "app_default") {
+    provider = undefined
+  } else if (trimmedProviderId === "custom") {
+    provider = customProvider ? { custom: customProvider } : undefined
+  } else if (BUILTIN_PROVIDERS.includes(trimmedProviderId)) {
+    provider = trimmedProviderId
+  } else {
+    provider = { custom: trimmedProviderId }
+  }
 
   async function translateSingle(
     request: TranslationRequest,
