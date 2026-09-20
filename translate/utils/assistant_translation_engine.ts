@@ -137,8 +137,15 @@ export function createAssistantTranslationEngine(config?: TranslationEngineConfi
       // unknown api provider）时，回退为“省略 provider”（用 App 模型选择器当前默认
       // 供应商）重试一次。该错误可能在 requestStreaming 调用时、也可能在读取数据流时
       // 抛出，故整个“发起+读流”都纳入重试。app_default 已验证能翻通。
-      if (provider && /not found|unknown api provider/i.test(message)) {
-        return await runAssistantOnce(request, callbacks, undefined)
+      if (provider && /not found|unknown api provider|valid api key/i.test(message)) {
+        try {
+          return await runAssistantOnce(request, callbacks, undefined)
+        } catch (fallbackError) {
+          // 诊断：把“显式 provider 失败 + 回退 App 默认也失败”两段错误拼起来，
+          // 便于从日志区分是名字查不到，还是 App 默认供应商在此上下文不可用。
+          const fb = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          throw new Error(`[provider "${trimmedProviderId || customProvider}" 查找失败: ${message}] [回退App默认供应商也失败: ${fb}]`)
+        }
       }
       throw error
     }

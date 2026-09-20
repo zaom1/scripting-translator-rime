@@ -3693,8 +3693,15 @@ function KeyboardContent(props: {
       // 显式 provider 按名字查不到（custom ... not found / unknown api provider）时，
       // 回退为省略 provider（用 App 当前默认供应商）重试一次。错误可能在发起或读流时
       // 抛出，故整个“发起+读流”都纳入重试。
-      if (provider && /not found|unknown api provider/i.test(message)) {
-        return await runOnce(undefined);
+      if (provider && /not found|unknown api provider|valid api key/i.test(message)) {
+        try {
+          return await runOnce(undefined);
+        } catch (fallbackError) {
+          // 诊断：把“显式 provider 失败 + 回退 App 默认也失败”两段错误拼起来，
+          // 便于从日志区分是名字查不到，还是 App 默认供应商在此上下文不可用。
+          const fb = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          throw new Error(`[provider "${trimmedProviderId || trimmedCustom}" 查找失败: ${message}] [回退App默认供应商也失败: ${fb}]`);
+        }
       }
       throw error;
     }
