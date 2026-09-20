@@ -90,7 +90,7 @@ function assistantLogOptions(engine: { kind?: string; config?: any }) {
   const modelId = String(engine.config?.assistantModelId ?? "").trim()
 
   return {
-    provider: providerId === "custom" ? `{ custom: "${customProvider}" }` : providerId,
+    provider: providerId === "custom" ? customProvider : providerId,
     modelId: modelId || "(default)",
   }
 }

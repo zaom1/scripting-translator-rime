@@ -57,8 +57,10 @@ export function createAssistantTranslationEngine(config?: TranslationEngineConfi
   const providerId = config?.assistantProviderId ?? "openai"
   const customProvider = String(config?.assistantCustomProvider ?? "").trim()
   const modelId = String(config?.assistantModelId ?? "").trim()
+  // App 原生 Assistant 的自定义 provider 必须直接传名称字符串（如 "agnes1"），
+  // 包成 { custom: "..." } 对象会被 App 判为 "custom api provider not found"。
   const provider = providerId === "custom"
-    ? (customProvider ? { custom: customProvider } : undefined)
+    ? (customProvider || undefined)
     : providerId
 
   async function translateSingle(
