@@ -1,7 +1,9 @@
 import {
   Button,
   HStack,
+  Image,
   ScrollView,
+  Spacer,
   Text,
   VStack,
   useMemo,
@@ -15,7 +17,8 @@ import {
   modelEntryLabel,
 } from "./aiModelStore";
 
-// 键盘内模型选择：替换功能键行位置渲染，高度约 functionKeyHeight+8，
+// 键盘内模型选择：打开时占据「CandidateHeader + 功能键行」两行的垂直空间
+// （约 90px），竖排布局——顶部搜索状态行 + 下方大字体可滚动列表。
 // QWERTY 三行字母键完全不被遮挡，用户点击字母键即可搜索过滤模型。
 export function ModelPickerSurface(props: {
   height: number;
@@ -34,58 +37,58 @@ export function ModelPickerSurface(props: {
   );
 
   return (
-    <HStack
-      spacing={2}
-      padding={{ horizontal: 4, vertical: 1 }}
+    <VStack
+      alignment="leading"
+      spacing={4}
+      padding={{ horizontal: 10, vertical: 6 }}
       frame={{
         width: "100%" as any,
         height: props.height,
-        alignment: "leading" as any,
+        alignment: "top" as any,
       }}
       background={"rgba(0,0,0,0.001)" as any}
-      glassEffect={{ type: "rect", cornerRadius: 6 } as any}
-      clipShape={{ type: "rect", cornerRadius: 6 }}
+      glassEffect={{ type: "rect", cornerRadius: 12 } as any}
+      clipShape={{ type: "rect", cornerRadius: 12 }}
     >
-      {/* 左侧：搜索状态 + 操作按钮 */}
-      <VStack
-        alignment="leading"
-        spacing={0}
-        frame={{ width: 68, alignment: "top" as any }}
-      >
+      {/* 顶部：搜索状态 + 清空/关闭 */}
+      <HStack spacing={6} frame={{ width: "100%" as any }}>
+        <Image systemName="brain.head.profile" font="subheadline" />
         <Text
-          font={"caption2" as any}
+          font="subheadline"
           foregroundStyle={props.query ? "primary" : "secondaryLabel"}
-          lineLimit={2}
+          lineLimit={1}
+          truncationMode="tail"
+          frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}
         >
-          {props.query ? props.query : "搜索模型"}
-        </Text>
-        <HStack spacing={2}>
           {props.query
-            ? (
-              <Button action={() => props.onClearQuery()}>
-                <Text font={"caption2" as any} foregroundStyle="tintColor">清</Text>
-              </Button>
-            )
-            : null}
-          <Button action={() => props.onClose()}>
-            <Text font={"caption2" as any} foregroundStyle="secondaryLabel">✕</Text>
-          </Button>
-        </HStack>
-      </VStack>
+            ? `搜索“${props.query}”`
+            : "选模型 · 用下方字母键输入过滤"}
+        </Text>
+        {props.query
+          ? (
+            <Button action={() => props.onClearQuery()}>
+              <Text font="subheadline" foregroundStyle="tintColor">清空</Text>
+            </Button>
+          )
+          : null}
+        <Button action={() => props.onClose()}>
+          <Image systemName="xmark.circle.fill" font="subheadline" />
+        </Button>
+      </HStack>
 
-      {/* 右侧：模型列表（可滚动） */}
+      {/* 下方：大字体可滚动模型列表 */}
       {visible.length === 0
         ? (
-          <Text font={"caption2" as any} foregroundStyle="secondaryLabel">
-            无匹配
+          <Text font="subheadline" foregroundStyle="secondaryLabel" lineLimit={2}>
+            {props.query ? "没有匹配的模型。" : "模型池为空，请先在翻译器添加 AI 接口。"}
           </Text>
         )
         : (
           <ScrollView
             axes="vertical"
-            frame={{ maxWidth: "infinity" as any, maxHeight: "infinity" as any }}
+            frame={{ width: "100%" as any, maxHeight: "infinity" as any }}
           >
-            <VStack alignment="leading" spacing={0}>
+            <VStack alignment="leading" spacing={4}>
               {visible.map((entry) => {
                 const usable = isModelUsableInKeyboard(entry);
                 const isActive = entry.id === activeId;
@@ -97,25 +100,45 @@ export function ModelPickerSurface(props: {
                       props.onPick(entry);
                     }}
                   >
-                    <Text
-                      font={"caption2" as any}
-                      foregroundStyle={
-                        isActive
-                          ? "tintColor"
-                          : (usable ? "primary" : "secondaryLabel")
-                      }
-                      lineLimit={1}
-                      truncationMode="tail"
+                    <HStack
+                      spacing={8}
+                      frame={{
+                        width: "100%" as any,
+                        alignment: "leading" as any,
+                      }}
                     >
-                      {isActive ? "●" : "○"} {modelEntryLabel(entry) || entry.id}
-                      {!usable ? " ×" : ""}
-                    </Text>
+                      <Image
+                        systemName={
+                          isActive ? "largecircle.fill.circle" : "circle"
+                        }
+                        font="body"
+                        foregroundStyle={
+                          isActive ? "tintColor" : "secondaryLabel"
+                        }
+                      />
+                      <Text
+                        font="body"
+                        foregroundStyle={usable ? "primary" : "secondaryLabel"}
+                        lineLimit={1}
+                        truncationMode="tail"
+                      >
+                        {modelEntryLabel(entry) || entry.id}
+                      </Text>
+                      <Spacer />
+                      {!usable
+                        ? (
+                          <Text font="caption" foregroundStyle="secondaryLabel">
+                            不可用
+                          </Text>
+                        )
+                        : null}
+                    </HStack>
                   </Button>
                 );
               })}
             </VStack>
           </ScrollView>
         )}
-    </HStack>
+    </VStack>
   );
 }

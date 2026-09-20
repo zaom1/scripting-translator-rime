@@ -51,6 +51,7 @@ import {
   type PressVisualCommit,
 } from "./components";
 import {
+  candidateHeaderHeight,
   CandidateHeader,
   type ExpandedCandidateItem,
   ExpandedCandidatePanel,
@@ -390,9 +391,10 @@ function t9VisualDelimiterOffset(cursor: number, positions: number[]) {
     .length;
 }
 
-// 模型选择面板：替换功能键行位置，高度等于 functionKeyHeight，
-// QWERTY 三行字母键完全不被遮挡，用户可直接点击字母键搜索过滤。
-const MODEL_PICKER_EXTRA = 8; // 比功能键行多一点点空间给标题
+// 模型选择面板：打开时隐藏 CandidateHeader（工具栏行+候选词栏），面板占据
+// 「CandidateHeader + 功能键行」两行的垂直空间（见 modelPickerPanelHeight），
+// 字体更大更易读；因隐藏 CandidateHeader 腾出的高度正好补给面板，键盘总高不变、
+// QWERTY 三行绝对位置不变、完全不遮挡，字母键可点击搜索过滤。
 
 export function KeyboardView() {
   return (
@@ -566,6 +568,9 @@ function KeyboardContent(props: {
       ),
     [settings, props.availableHeight, props.availableWidth],
   );
+  const candidateHeaderH = candidateHeaderHeight(settings, metrics);
+  const modelPickerBodyExtra = modelPickerOpen ? candidateHeaderH + 6 : 0;
+  const modelPickerPanelHeight = metrics.functionKeyHeight + candidateHeaderH + 6;
 
   useEffect(() => {
     clearQueuedKeyboardActions();
@@ -4727,6 +4732,7 @@ function KeyboardContent(props: {
           maxHeight: "infinity" as any,
         }}
       >
+        {modelPickerOpen ? null : (
         <CandidateHeader
           controller={rimeViewStateControllerRef.current!}
           settings={settings}
@@ -4747,13 +4753,14 @@ function KeyboardContent(props: {
           onRightButton={onCandidateRightButton}
           onRenderCommit={onCandidateRenderCommit}
         />
+        )}
 
-        <ZStack frame={{ width: metrics.width, height: expandedPanelHeight }}>
+        <ZStack frame={{ width: metrics.width, height: expandedPanelHeight + modelPickerBodyExtra }}>
           <VStack
             spacing={0}
             frame={{
               width: metrics.width,
-              height: expandedPanelHeight,
+              height: expandedPanelHeight + modelPickerBodyExtra,
               alignment: "top" as any,
             }}
             opacity={candidateExpanded ? 0 : 1}
@@ -4762,7 +4769,7 @@ function KeyboardContent(props: {
               {modelPickerOpen
                 ? (
                   <ModelPickerSurface
-                    height={metrics.functionKeyHeight + MODEL_PICKER_EXTRA}
+                    height={modelPickerPanelHeight}
                     activeLabel={activeModelLabel}
                     query={modelSearchQuery}
                     onClearQuery={() => setModelSearchQuery("")}
