@@ -94,12 +94,12 @@ function logTranslationEvent(message: string, payload?: Record<string, unknown>)
 function assistantLogOptions(engine: { kind?: string; config?: any }) {
   if (engine.kind !== "assistant") return {}
 
-  const providerId = String(engine.config?.assistantProviderId ?? "openai").trim() || "openai"
+  const providerId = String(engine.config?.assistantProviderId ?? "app_default").trim() || "app_default"
   const customProvider = String(engine.config?.assistantCustomProvider ?? "").trim()
   const modelId = String(engine.config?.assistantModelId ?? "").trim()
 
   return {
-    provider: providerId === "custom" ? customProvider : providerId,
+    provider: providerId === "custom" ? customProvider : (providerId === "app_default" ? "(App 默认)" : providerId),
     modelId: modelId || "(default)",
   }
 }

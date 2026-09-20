@@ -85,13 +85,13 @@ function logTranslationEvent(message: string, payload?: Record<string, unknown>)
 function assistantLogOptions(engine: { kind?: string; config?: any }) {
   if (engine.kind !== "assistant") return {}
 
-  const providerId = String(engine.config?.assistantProviderId ?? "openai").trim() || "openai"
+  const providerId = String(engine.config?.assistantProviderId ?? "app_default").trim() || "app_default"
   const customProvider = String(engine.config?.assistantCustomProvider ?? "").trim()
   const modelId = String(engine.config?.assistantModelId ?? "").trim()
 
   return {
-    // 日志只展示 provider 身份（纯名称），实际传给 Assistant 的是 { custom: 名称 } 对象。
-    provider: providerId === "custom" ? customProvider : providerId,
+    // 日志只展示 provider 身份（纯名称）；app_default 表示不传 provider、用 App 默认。
+    provider: providerId === "custom" ? customProvider : (providerId === "app_default" ? "(App 默认)" : providerId),
     modelId: modelId || "(default)",
   }
 }

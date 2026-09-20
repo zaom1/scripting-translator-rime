@@ -15,6 +15,7 @@ import {
 import type { TranslationEngineConfig } from "../types"
 
 const ASSISTANT_PROVIDER_OPTIONS = [
+  { id: "app_default", label: "跟随 App 默认（模型选择器）" },
   { id: "openai", label: "OpenAI" },
   { id: "gemini", label: "Google Gemini" },
   { id: "anthropic", label: "Anthropic" },
@@ -30,7 +31,7 @@ function normalizeAssistantProviderId(value: unknown): AssistantProviderId {
   if (ASSISTANT_PROVIDER_OPTIONS.some((item) => item.id === normalized)) {
     return normalized as AssistantProviderId
   }
-  return "openai"
+  return "app_default"
 }
 
 export function AssistantEngineEditorView(props: {
@@ -90,7 +91,7 @@ export function AssistantEngineEditorView(props: {
             pickerStyle="menu"
             value={providerIndex}
             onChanged={(index: number) => {
-              setProviderId(ASSISTANT_PROVIDER_OPTIONS[index]?.id ?? "openai")
+              setProviderId(ASSISTANT_PROVIDER_OPTIONS[index]?.id ?? "app_default")
             }}
           >
             {ASSISTANT_PROVIDER_OPTIONS.map((option, index) => (
@@ -99,6 +100,11 @@ export function AssistantEngineEditorView(props: {
               </Text>
             ))}
           </Picker>
+          {providerId === "app_default" ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={3}>
+              不指定供应商，直接用 App 的 Assistant 模型选择器里当前选定的默认供应商（例如 agnes1）。请先在 App 里把它选为默认。
+            </Text>
+          ) : null}
           {providerId === "custom" ? (
             <HStack spacing={10} frame={{ maxWidth: "infinity" as any, alignment: "leading" as any }}>
               <Text frame={{ width: 110, alignment: "leading" as any }}>

@@ -54,16 +54,18 @@ function normalizeAssistantTranslation(content: string) {
 }
 
 export function createAssistantTranslationEngine(config?: TranslationEngineConfig) {
-  const providerId = config?.assistantProviderId ?? "openai"
+  const providerId = config?.assistantProviderId ?? "app_default"
   const customProvider = String(config?.assistantCustomProvider ?? "").trim()
   const modelId = String(config?.assistantModelId ?? "").trim()
-  // 自定义 provider 必须用 { custom: "名称" } 对象形式传给 App 原生 Assistant：
-  // 传纯字符串会被当作内置 provider 名而报 "unknown api provider"。
-  // 若仍报 "custom api provider 名称 not found"，说明该名称未在 App 的
-  // Assistant 模型选择器中注册，需在 App 端配置，脚本无法绕过。
-  const provider = providerId === "custom"
-    ? (customProvider ? { custom: customProvider } : undefined)
-    : providerId
+  // provider 取值（据官方 Assistant 文档）：内置名 / { custom: 名称 } / 省略。
+  // - app_default：不传 provider，直接用 App 模型选择器里当前选定的默认供应商
+  //   （你在 App 里配好并选为默认的 agnes1 会走这条，避开按名字查找导致的 not found）。
+  // - custom：显式传 { custom: 名称 }（纯字符串不被支持，会被当作内置名报 unknown）。
+  const provider = providerId === "app_default"
+    ? undefined
+    : providerId === "custom"
+      ? (customProvider ? { custom: customProvider } : undefined)
+      : providerId
 
   async function translateSingle(
     request: TranslationRequest,

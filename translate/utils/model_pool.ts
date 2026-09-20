@@ -410,7 +410,7 @@ export async function translateWithModelEntry(
 ): Promise<TranslationResult> {
   if (entry.kind === "assistant") {
     const config: TranslationEngineConfig = {
-      assistantProviderId: entry.assistantProviderId ?? "openai",
+      assistantProviderId: entry.assistantProviderId ?? "app_default",
       assistantCustomProvider: entry.assistantCustomProvider,
       assistantModelId: entry.assistantModelId,
     }

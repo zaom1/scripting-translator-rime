@@ -42,7 +42,8 @@ export type TranslationEngineConfig = {
   compatibilityMode?: AiApiCompatibilityMode
   baseUrl?: string
   model?: string
-  assistantProviderId?: "openai" | "gemini" | "anthropic" | "deepseek" | "openrouter" | "custom"
+  // "app_default" = 不向 Assistant 传 provider，使用 App 模型选择器里当前配置的默认供应商。
+  assistantProviderId?: "app_default" | "openai" | "gemini" | "anthropic" | "deepseek" | "openrouter" | "custom"
   assistantCustomProvider?: string
   assistantModelId?: string
   // 「AI 翻译」引擎选中的模型池条目 id（仅存本引擎，不写全局激活模型，与键盘解耦）。
