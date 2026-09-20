@@ -3669,36 +3669,35 @@ function KeyboardContent(props: {
       provider = { custom: trimmedProviderId };
     }
 
-    const openStream = (p: string | { custom: string } | undefined) =>
-      assistant.requestStreaming({
+    const runOnce = async (p: string | { custom: string } | undefined): Promise<string> => {
+      const stream = await assistant.requestStreaming({
         systemPrompt,
         provider: p,
         modelId: model.modelId || undefined,
         messages: { role: "user", content: userText },
       });
+      let result = "";
+      for await (const chunk of stream as any) {
+        if (chunk?.type !== "text") continue;
+        result += String(chunk.content ?? "");
+      }
+      const trimmed = result.trim();
+      if (!trimmed) throw new Error("Assistant 未返回内容");
+      return trimmed;
+    };
 
-    let stream;
     try {
-      stream = await openStream(provider);
+      return await runOnce(provider);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 显式 provider 按名字查不到（custom ... not found / unknown api provider）时，
-      // 回退为省略 provider（用 App 当前默认供应商）重试一次。
+      // 回退为省略 provider（用 App 当前默认供应商）重试一次。错误可能在发起或读流时
+      // 抛出，故整个“发起+读流”都纳入重试。
       if (provider && /not found|unknown api provider/i.test(message)) {
-        stream = await openStream(undefined);
-      } else {
-        throw error;
+        return await runOnce(undefined);
       }
+      throw error;
     }
-
-    let result = "";
-    for await (const chunk of stream as any) {
-      if (chunk?.type !== "text") continue;
-      result += String(chunk.content ?? "");
-    }
-    const trimmed = result.trim();
-    if (!trimmed) throw new Error("Assistant 未返回内容");
-    return trimmed;
   }
 
   // 统一的工具栏 AI入口：根据激活模型类型自动分发。
