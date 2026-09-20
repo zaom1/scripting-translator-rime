@@ -3652,10 +3652,12 @@ function KeyboardContent(props: {
     const assistant = (globalThis as any).Assistant;
     if (!assistant?.requestStreaming) throw new Error("当前环境不支持 Assistant");
 
-    // App 原生 Assistant 的自定义 provider 必须直接传名称字符串（如 "agnes1"），
-    // 包成 { custom: "..." } 对象会被 App 判为 "custom api provider not found"。
+    // 自定义 provider 必须用 { custom: "名称" } 对象形式传给 App 原生 Assistant；
+    // 传纯字符串会被当作内置 provider 名而报 "unknown api provider"。
+    // 若仍报 "custom api provider 名称 not found"，是该名称未在 App 的 Assistant
+    // 模型选择器中注册，需在 App 端配置，脚本无法绕过。
     const provider = model.providerId === "custom"
-      ? (model.customProvider || undefined)
+      ? (model.customProvider ? { custom: model.customProvider } : undefined)
       : model.providerId;
 
     const stream = await assistant.requestStreaming({

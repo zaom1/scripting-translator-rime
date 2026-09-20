@@ -90,6 +90,7 @@ function assistantLogOptions(engine: { kind?: string; config?: any }) {
   const modelId = String(engine.config?.assistantModelId ?? "").trim()
 
   return {
+    // 日志只展示 provider 身份（纯名称），实际传给 Assistant 的是 { custom: 名称 } 对象。
     provider: providerId === "custom" ? customProvider : providerId,
     modelId: modelId || "(default)",
   }
