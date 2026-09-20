@@ -78,13 +78,13 @@ export function createAssistantTranslationEngine(config?: TranslationEngineConfi
     provider = { custom: trimmedProviderId }
   }
 
-  async function translateSingle(
+  async function openAssistantStream(
     request: TranslationRequest,
-    callbacks?: TranslationProgressCallbacks
-  ): Promise<TranslationResult> {
-    const stream = await Assistant.requestStreaming({
+    p: string | { custom: string } | undefined
+  ) {
+    return await Assistant.requestStreaming({
       systemPrompt: ASSISTANT_TRANSLATION_SYSTEM_PROMPT,
-      provider,
+      provider: p,
       modelId: modelId || undefined,
       messages: {
         role: "user",
@@ -99,6 +99,26 @@ export function createAssistantTranslationEngine(config?: TranslationEngineConfi
         ].join("\n"),
       },
     })
+  }
+
+  async function translateSingle(
+    request: TranslationRequest,
+    callbacks?: TranslationProgressCallbacks
+  ): Promise<TranslationResult> {
+    let stream
+    try {
+      stream = await openAssistantStream(request, provider)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 显式传了 provider、但 App 按名字查不到该供应商（custom ... not found /
+      // unknown api provider）时，回退为“省略 provider”（用 App 模型选择器当前默认
+      // 供应商）重试一次——页面已验证 app_default 能翻通，系统翻译路径读到旧配置也能自 healing。
+      if (provider && /not found|unknown api provider/i.test(message)) {
+        stream = await openAssistantStream(request, undefined)
+      } else {
+        throw error
+      }
+    }
 
     let translatedText = ""
     let lastPartialText = ""

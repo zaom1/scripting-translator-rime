@@ -3669,12 +3669,27 @@ function KeyboardContent(props: {
       provider = { custom: trimmedProviderId };
     }
 
-    const stream = await assistant.requestStreaming({
-      systemPrompt,
-      provider,
-      modelId: model.modelId || undefined,
-      messages: { role: "user", content: userText },
-    });
+    const openStream = (p: string | { custom: string } | undefined) =>
+      assistant.requestStreaming({
+        systemPrompt,
+        provider: p,
+        modelId: model.modelId || undefined,
+        messages: { role: "user", content: userText },
+      });
+
+    let stream;
+    try {
+      stream = await openStream(provider);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // 显式 provider 按名字查不到（custom ... not found / unknown api provider）时，
+      // 回退为省略 provider（用 App 当前默认供应商）重试一次。
+      if (provider && /not found|unknown api provider/i.test(message)) {
+        stream = await openStream(undefined);
+      } else {
+        throw error;
+      }
+    }
 
     let result = "";
     for await (const chunk of stream as any) {
